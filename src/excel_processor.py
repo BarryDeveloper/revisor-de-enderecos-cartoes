@@ -13,14 +13,24 @@ class ExcelProcessor:
         self.cep_service = CEPService()
 
     @staticmethod
-    def _limpar_nome_cabecalho(texto):
+    def _remover_acentos_str(texto):
+        if not texto:
+            return ""
+        import unicodedata
+        nfkd = unicodedata.normalize('NFKD', str(texto))
+        return "".join([c for c in nfkd if not unicodedata.combining(c)])
+
+    @classmethod
+    def _limpar_nome_cabecalho(cls, texto):
         if not texto:
             return ""
         s = str(texto).strip()
         match = re.search(r"\[(.*?)\]", s)
         if match:
-            return match.group(1).strip()
-        return s
+            s = match.group(1).strip()
+        # Remove sufixos automáticos do Excel como .1, .2
+        s = re.sub(r"\.\d+$", "", s)
+        return cls._remover_acentos_str(s).upper()
 
     @staticmethod
     def _sanitizar_valor_excel(val):
@@ -34,51 +44,52 @@ class ExcelProcessor:
 
     def _localizar_colunas_cabecalho(self, cabecalhos):
         """
-        Mapeamento de colunas com correspondência exata priorizada
-        e exclusão de falsos positivos (ex: DATA_RECEPCAO não casa com CEP).
+        Mapeamento de colunas robusto, flexível e imune a formatações do Excel
+        (ex: Tabela[END_LOGRADOURO.1], Tabela[BAIRRO], [CIDADE], [ESTADO]).
         """
         mapa_colunas = {}
         for idx, val in enumerate(cabecalhos):
             if val is not None:
-                nome_limpo = self._limpar_nome_cabecalho(val).upper()
+                nome_limpo = self._limpar_nome_cabecalho(val)
+                nome_norm = re.sub(r"[\s\.\-\/]+", "_", nome_limpo).strip("_")
+                mapa_colunas[nome_norm] = idx
                 mapa_colunas[nome_limpo] = idx
 
         def achar_indice(padroes_positivos, palavras_negativas=None):
-            palavras_negativas = palavras_negativas or []
+            palavras_negativas = [self._limpar_nome_cabecalho(p) for p in (palavras_negativas or [])]
+            padroes_norm = [self._limpar_nome_cabecalho(p) for p in padroes_positivos]
 
             # 1. Tentativa de correspondência exata
-            for padrao in padroes_positivos:
+            for padrao in padroes_norm:
                 for nome, idx in mapa_colunas.items():
-                    if nome == padrao.upper():
+                    if nome == padrao:
                         return idx
 
-            # 2. Tentativa por token/limite de palavra (ex: END_CEP, CEP_END)
-            for padrao in padroes_positivos:
+            # 2. Tentativa por token/limite de palavra
+            for padrao in padroes_norm:
                 for nome, idx in mapa_colunas.items():
-                    # Não pode conter termos negativos
-                    if any(re.search(rf"(?:^|_){re.escape(neg.upper())}(?:_|$)", nome) for neg in palavras_negativas):
+                    if any(re.search(rf"(?:^|_){re.escape(neg)}(?:_|$)", nome) for neg in palavras_negativas):
                         continue
-                    # Deve conter o padrão delimitado por underline ou início/fim
-                    if re.search(rf"(?:^|_){re.escape(padrao.upper())}(?:_|$)", nome):
+                    if re.search(rf"(?:^|_){re.escape(padrao)}(?:_|$)", nome):
                         return idx
             return None
 
         return {
-            "cep": achar_indice(["END_CEP", "CEP_ENDERECO", "CEP_RESIDENCIAL", "CEP"], palavras_negativas=["RECEPCAO", "PROTOCOLO"]),
+            "cep": achar_indice(["END_CEP", "CEP_ENDERECO", "CEP_RESIDENCIAL", "CEP", "ENDERECO_CEP"], palavras_negativas=["RECEPCAO", "PROTOCOLO"]),
             "num": achar_indice(
-                ["END_NUMERO", "NUMERO_END", "NUM_RESIDENCIA", "NUMERO_RESIDENCIAL", "END_NUM", "NUMERO"],
+                ["END_NUMERO", "NUMERO_END", "NUM_RESIDENCIA", "NUMERO_RESIDENCIAL", "END_NUM", "NUMERO", "NUM"],
                 palavras_negativas=["CHAMADO", "CONTRATO", "TELEFONE", "CPF", "ID", "CARTAO", "DOC", "CIVIL", "PROCESSO"]
             ),
             "comp": achar_indice(
-                ["END_COMPLEMENTO", "COMPLEMENTO_END", "COMPLEMENTO"],
+                ["END_COMPLEMENTO", "COMPLEMENTO_END", "COMPLEMENTO", "END_COMPL", "COMPL"],
                 palavras_negativas=["CHAMADO", "PROCESSO"]
             ),
             "logr": achar_indice(
-                ["END_LOGRADOURO", "LOGRADOURO", "RUA_ENDERECO", "ENDERECO", "RUA", "AVENIDA"],
+                ["END_LOGRADOURO", "LOGRADOURO", "RUA_ENDERECO", "ENDERECO", "RUA", "AVENIDA", "END_RUA"],
                 palavras_negativas=["CIVIL", "CHAMADO", "EMPRESA", "CARGO", "NASCIMENTO"]
             ),
             "bairro": achar_indice(
-                ["END_BAIRRO", "BAIRRO"],
+                ["END_BAIRRO", "BAIRRO", "ENDERECO_BAIRRO"],
                 palavras_negativas=["CHAMADO", "EMPRESA"]
             ),
             "cidade": achar_indice(
@@ -116,7 +127,7 @@ class ExcelProcessor:
                     ws_orig = sheet
                     cols = c_map
                     todas_linhas = linhas
-                    cabecalho_bruto = cab
+                    cabecalho_bruto = list(linhas[0])
                     break
 
         if ws_orig is None or not todas_linhas:

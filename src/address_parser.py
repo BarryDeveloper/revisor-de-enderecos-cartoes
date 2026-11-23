@@ -203,11 +203,19 @@ class AddressParser:
             for match_cid in reversed(matches):
                 pos = match_cid.start(1)
                 texto_antes = texto[:pos].strip()
-                if not re.search(r"(?:\b(?:rua|avenida|alameda|travessa|rodovia)\b|\b(?:r|av)\.)\s*$", texto_antes, re.IGNORECASE):
-                    resultado["cidade"] = cid
-                    texto = texto[:match_cid.start()] + " " + texto[match_cid.end():]
-                    texto = texto.strip(" ,-\\/")
-                    break
+                # Não extrair se for parte de nome de rua (ex: 'Rua Mariana')
+                if re.search(r"(?:\b(?:rua|avenida|alameda|travessa|rodovia)\b|\b(?:r|av)\.)\s*$", texto_antes, re.IGNORECASE):
+                    continue
+                # Se for precedido por qualificador de bairro (ex: 'Nova Marituba', 'Vila Marituba', 'Jardim Marituba')
+                # e a cidade em si não começa com essa palavra (ex: 'Nova Lima' já casa o bloco 'Nova Lima' inteiro)
+                if re.search(r"\b(?:nova|novo|vila|jardim|jd\.?|parque|pq\.?|residencial|res\.?|bairro|conjunto|conj\.?)\s*$", texto_antes, re.IGNORECASE):
+                    if not resultado["cidade"]:
+                        resultado["cidade"] = cid
+                    continue
+                resultado["cidade"] = cid
+                texto = texto[:match_cid.start()] + " " + texto[match_cid.end():]
+                texto = texto.strip(" ,-\\/")
+                break
             if resultado["cidade"]:
                 break
 
@@ -275,13 +283,31 @@ class AddressParser:
         if resultado["logradouro"]:
             eh_rodovia = bool(re.match(r"^(?:Rodovia|Estrada|BR|PA|MG|SP|RJ)\b", resultado["logradouro"], re.IGNORECASE))
             if not eh_rodovia:
-                match_num_fim = re.search(r"^(.*?)\s+((?:n[ºo°\.]?\s*)?\d{1,5}(?:-[a-zA-Z0-9]+|[a-zA-Z])?|S\/?N)$", resultado["logradouro"], re.IGNORECASE)
-                if match_num_fim:
-                    nome_via = match_num_fim.group(1).strip()
-                    if not re.match(r"^(Rua|R\.|Av\.|Avenida|Travessa|Alameda)\s+[A-Za-z]?\d{1,4}$", resultado["logradouro"], re.IGNORECASE):
-                        resultado["logradouro"] = nome_via
-                        if not resultado["numero"]:
-                            resultado["numero"] = re.sub(r"^n[ºo°\.]?\s*", "", match_num_fim.group(2).strip(), flags=re.IGNORECASE)
+                # Caso A: número no meio seguido de bairro (ex: 'Rua São José 20 Nova Marituba' ou 'Rua A 10 Centro')
+                match_num_meio = re.search(r"^(.*?)\s+((?:n[ºo°\.]?\s*)?\d{1,5}(?:-[a-zA-Z0-9]+|[a-zA-Z])?|S\/?N)\s+([A-Za-zÀ-ÿ].*)$", resultado["logradouro"], re.IGNORECASE)
+                if match_num_meio and not re.match(r"^(Rua|R\.|Av\.|Avenida|Travessa|Alameda)\s+[A-Za-z]?\d{1,4}$", match_num_meio.group(1).strip(), re.IGNORECASE):
+                    nome_via = match_num_meio.group(1).strip()
+                    num_via = re.sub(r"^n[ºo°\.]?\s*", "", match_num_meio.group(2).strip(), flags=re.IGNORECASE)
+                    resto_via = match_num_meio.group(3).strip(" ,-")
+                    resultado["logradouro"] = nome_via
+                    if not resultado["numero"]:
+                        resultado["numero"] = num_via
+                    if not resultado["bairro"] and len(resto_via) > 2:
+                        resultado["bairro"] = resto_via
+                    elif resto_via and resto_via != resultado["bairro"]:
+                        if not resultado["complemento_real"]:
+                            resultado["complemento_real"] = resto_via
+                        else:
+                            resultado["complemento_real"] = f"{resultado['complemento_real']}, {resto_via}"
+                else:
+                    # Caso B: número no final (ex: 'Rua Sete de Setembro 123')
+                    match_num_fim = re.search(r"^(.*?)\s+((?:n[ºo°\.]?\s*)?\d{1,5}(?:-[a-zA-Z0-9]+|[a-zA-Z])?|S\/?N)$", resultado["logradouro"], re.IGNORECASE)
+                    if match_num_fim:
+                        nome_via = match_num_fim.group(1).strip()
+                        if not re.match(r"^(Rua|R\.|Av\.|Avenida|Travessa|Alameda)\s+[A-Za-z]?\d{1,4}$", resultado["logradouro"], re.IGNORECASE):
+                            resultado["logradouro"] = nome_via
+                            if not resultado["numero"]:
+                                resultado["numero"] = re.sub(r"^n[ºo°\.]?\s*", "", match_num_fim.group(2).strip(), flags=re.IGNORECASE)
 
         # Se cidade ou estado não foram encontrados no texto, usa o padrão caso fornecido
         if not resultado["cidade"] and cidade_padrao:

@@ -74,6 +74,21 @@ class TestParserFuncionando(unittest.TestCase):
     def test_rodovia_com_hifen(self):
         self.assertEqual(P.extrair("Rodovia PA-275, Km 5, Zona Rural, Curionópolis - PA")["logradouro"], "Rodovia PA-275")
 
+    def test_bairro_nova_marituba_com_virgula(self):
+        r = P.extrair("Rua São José, 20, Nova Marituba - PA")
+        self.assertEqual((r["logradouro"], r["numero"], r["bairro"], r["cidade"], r["estado"]),
+                         ("Rua São José", "20", "Nova Marituba", "Marituba", "PA"))
+
+    def test_bairro_nova_marituba_sem_virgula(self):
+        r = P.extrair("Rua São José 20 Nova Marituba - PA")
+        self.assertEqual((r["logradouro"], r["numero"], r["bairro"], r["cidade"], r["estado"]),
+                         ("Rua São José", "20", "Nova Marituba", "Marituba", "PA"))
+
+    def test_bairro_nova_marituba_e_cidade_marituba(self):
+        r = P.extrair("Rua São José, 20, Nova Marituba, Marituba - PA")
+        self.assertEqual((r["logradouro"], r["numero"], r["bairro"], r["cidade"], r["estado"]),
+                         ("Rua São José", "20", "Nova Marituba", "Marituba", "PA"))
+
 
 class TestParserBugsAbertos(unittest.TestCase):
     def test_cidade_hifen_uf_nao_vira_complemento(self):
@@ -205,9 +220,11 @@ class TestPlanilhaBugsAbertos(PlanilhaBase):
         self.assertEqual(self.linha_saida(out)["END_CEP"], "65930-000")
 
     def test_texto_corrido_com_dados_da_sede_nao_fica_pronto(self):
-        ok, rev, _ = self.processar([linha(cep=SEDE, logr="Rua Sede", num="359", cid="Nova Lima", uf="MG",
-                                           comp="Rua Sete de Setembro 123 Centro Parauapebas - PA")])
-        self.assertEqual((ok, rev), (0, 1))
+        ok, rev, out = self.processar([linha(cep=SEDE, logr="Rua Sede", num="359", cid="Nova Lima", uf="MG",
+                                             comp="Rua Sete de Setembro 123 Centro Parauapebas - PA")])
+        d = self.linha_saida(out)
+        self.assertEqual((ok, rev, d["END_CEP"], d["END_NUMERO"], d["END_BAIRRO"], d["END_CIDADE"]),
+                         (1, 0, "68515-000", "123", "Centro", "Parauapebas"))
 
     def test_cep_lixo_vai_para_revisao(self):
         ok, rev, _ = self.processar([linha(cep="123", logr="Rua A", num="5", cid="Parauapebas", uf="PA")])
