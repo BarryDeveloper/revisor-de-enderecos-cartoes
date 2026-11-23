@@ -1,7 +1,16 @@
+import logging
 import re
 import requests
 
+logger = logging.getLogger("CEPService")
+
 class CEPService:
+    """Serviço para consulta, validação e padronização de CEP com redundância e cache.
+
+    Atributos:
+        _cache_cep (dict): Cache em memória de CEPs já consultados.
+        _cache_cidade_cep (dict): Mapeamento fixo de municípios com CEP único.
+    """
     """
     Serviço para consulta e validação de CEP e busca de CEP por Cidade/UF.
     Possui cache em memória para evitar chamadas de rede repetidas.
@@ -40,7 +49,7 @@ class CEPService:
         if cep_limpo in self._cache_cep:
             return self._cache_cep[cep_limpo]
 
-        # 1. Tentativa via ViaCEP
+        # 1. Tentativa principal: ViaCEP
         try:
             url_viacep = f"https://viacep.com.br/ws/{cep_limpo}/json/"
             resp = requests.get(url_viacep, timeout=2.5)
@@ -56,10 +65,10 @@ class CEPService:
                     }
                     self._cache_cep[cep_limpo] = resultado
                     return resultado
-        except Exception:
-            pass
+        except (requests.RequestException, ValueError) as e:
+            logger.warning(f"ViaCEP indisponível para CEP {cep_limpo}: {e}. Tentando BrasilAPI...")
 
-        # 2. Fallback via BrasilAPI
+        # 2. Fallback: BrasilAPI
         try:
             url_brasilapi = f"https://brasilapi.com.br/api/cep/v1/{cep_limpo}"
             resp = requests.get(url_brasilapi, timeout=2.5)
@@ -74,8 +83,8 @@ class CEPService:
                 }
                 self._cache_cep[cep_limpo] = resultado
                 return resultado
-        except Exception:
-            pass
+        except (requests.RequestException, ValueError) as e:
+            logger.warning(f"BrasilAPI indisponível para CEP {cep_limpo}: {e}")
 
         return None
 
