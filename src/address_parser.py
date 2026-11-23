@@ -29,7 +29,8 @@ CIDADES_CONHECIDAS = [
     "Ouro Preto",
     "Mariana",
     "Nova Lima",
-    "Belo Horizonte"
+    "Belo Horizonte",
+    "Marituba"
 ]
 
 class AddressParser:
@@ -65,7 +66,7 @@ class AddressParser:
 
         padroes_endereco = [
             r"\b(rua|r\.|avenida|av\.|alameda|travessa|rodovia)\b",
-            r"\b(curion[oó]polis|bar[aã]o de cocais|santa b[aá]rbara|a[cç]ail[aâ]ndia)\b",
+            r"\b(curion[oó]polis|bar[aã]o de cocais|santa b[aá]rbara|a[cç]ail[aâ]ndia|marituba)\b",
             r"-\s*(PA|MG|MA|SP|RJ|ES|Par[aá]|Minas Gerais|Maranh[aã]o)"
         ]
 
@@ -74,6 +75,41 @@ class AddressParser:
                 return True
 
         return False
+
+    @classmethod
+    def limpar_logradouro_com_base_oficial(cls, logradouro, bairro="", cidade="", estado=""):
+        """
+        Executa limpeza cruzada no nome da rua, removendo sobras de bairro, cidade,
+        estado ou loteamento que tenham ficado grudadas quando o texto original não tinha pontuação.
+        Preserva nomes legítimos de vias como 'Rua Pará', 'Rua Bahia', 'Avenida Maranhão'.
+        """
+        if not logradouro:
+            return ""
+
+        texto = str(logradouro).strip()
+
+        # 1. Se o Bairro confirmado estiver dentro do logradouro, remove
+        if bairro and len(str(bairro).strip()) > 2:
+            padrao_bairro = rf"\b{re.escape(str(bairro).strip())}\b"
+            texto = re.sub(padrao_bairro, " ", texto, flags=re.IGNORECASE).strip()
+
+        # 2. Se a Cidade confirmada estiver dentro do logradouro (e não for o nome da própria rua logo após 'Rua/Av'), remove
+        if cidade and len(str(cidade).strip()) > 2:
+            cid_limpa = str(cidade).strip()
+            # Só remove se NÃO for "Rua <Cidade>"
+            if not re.search(rf"\b(rua|r\.|avenida|av\.|alameda|travessa)\s+{re.escape(cid_limpa)}\b", texto, re.IGNORECASE):
+                padrao_cid = rf"\b{re.escape(cid_limpa)}\b"
+                texto = re.sub(padrao_cid, " ", texto, flags=re.IGNORECASE).strip()
+
+        # 3. Remover menções a estados que sobraram no final ou no meio (sem ser nome da rua)
+        for uf_extenso, uf_sigla in MAPA_ESTADOS.items():
+            if not re.search(rf"\b(rua|r\.|avenida|av\.|alameda|travessa)\s+({re.escape(uf_extenso)}|{re.escape(uf_sigla)})\b", texto, re.IGNORECASE):
+                texto = re.sub(rf"\b({re.escape(uf_extenso)}|{re.escape(uf_sigla)})\b", " ", texto, flags=re.IGNORECASE).strip()
+
+        # 4. Remover termos de lote/quadra/casa que tenham ficado colados no nome da rua
+        texto = re.sub(r"\b(quadra|lote|qd|lt)\b.*$", " ", texto, flags=re.IGNORECASE).strip()
+
+        return re.sub(r"\s+", " ", texto).strip(" ,-")
 
     @classmethod
     def extrair(cls, texto_bruto, cidade_padrao="", estado_padrao="", numero_padrao=""):
@@ -111,12 +147,10 @@ class AddressParser:
             texto = texto.strip()
 
         # 3. Extrair Cidade (com proteção para não apagar nomes de rua como 'Rua Mariana Silva')
-        # Só extrai se a cidade for precedida de separador (, ou - ou fim de texto) e não estiver logo após 'Rua/Avenida'
         for cid in CIDADES_CONHECIDAS:
             padrao_cid = rf"(?:^|[,;\-\/]\s*)\b({re.escape(cid)})\b"
             match_cid = re.search(padrao_cid, texto, re.IGNORECASE)
             if match_cid:
-                # Verifica se não faz parte do início de logradouro (ex: "Rua Mariana")
                 pos = match_cid.start(1)
                 texto_antes = texto[:pos].strip()
                 if not re.search(r"\b(rua|r\.|avenida|av\.|alameda|travessa)\s*$", texto_antes, re.IGNORECASE):
@@ -125,14 +159,14 @@ class AddressParser:
                     texto = texto.strip()
                     break
 
-        # 4. Extrair referências explícitas de Bairro (ex: "Bairro Guanabara", "Bairro: Chácaras do Sol - Primavera")
+        # 4. Extrair referências explícitas de Bairro
         match_bairro = re.search(r"\bBairro\s*:?\s*([^,\(\)\-\/]+)", texto, re.IGNORECASE)
         if match_bairro:
             resultado["bairro"] = match_bairro.group(1).strip(" ,-")
             texto = texto[:match_bairro.start()] + " " + texto[match_bairro.end():]
             texto = texto.strip()
 
-        # 5. Extrair complemento real / observações (ex: "Complexo Vs10", "Apto 103", "(Próximo a ...)")
+        # 5. Extrair complemento real / observações
         match_obs = re.search(r"(\(.*?\)|complemento\s+[^,\-\/]+|Apartamento\s*\d+|Apt\s*\d+\s*bl\s*\d+|Casa\s+de\s+Andar)", texto, re.IGNORECASE)
         if match_obs:
             resultado["complemento_real"] = match_obs.group(0).replace("complemento", "").strip(" ()")
@@ -140,7 +174,7 @@ class AddressParser:
             texto = texto.strip()
 
         # 6. Extrair Lote / Quadra detalhado
-        match_lote = re.search(r"(Quadra\s*\d+.*?Lote\s*\d+|Quadra\s*\d+\s*-\s*Casa\s*\d+)", texto, re.IGNORECASE)
+        match_lote = re.search(r"(Quadra\s*\d+.*?Lote\s*\d+|Quadra\s*\d+\s*-\s*Casa\s*\d+|Quadra\s*\w+)", texto, re.IGNORECASE)
         if match_lote:
             lote_detalhe = match_lote.group(0).strip(" ,-")
             if not resultado["complemento_real"]:
@@ -150,7 +184,7 @@ class AddressParser:
             texto = texto[:match_lote.start()] + " " + texto[match_lote.end():]
             texto = texto.strip()
 
-        # 7. Normalizar separadores de bairro/rua com hífen ou barra (ex: "Rua A - Centro" -> "Rua A, Centro")
+        # 7. Normalizar separadores de bairro/rua com hífen ou barra
         texto_normalizado = re.sub(r"\s+[\-\/]\s+", ", ", texto)
         partes = [re.sub(r"\s+", " ", p).strip(" ,-") for p in texto_normalizado.split(",") if p.strip(" ,-")]
 
@@ -158,17 +192,14 @@ class AddressParser:
             resultado["logradouro"] = partes[0]
 
             for p in partes[1:]:
-                # Se for número isolado e ainda não tem número definitivo
                 if re.match(r"^\d+$", p):
                     resultado["numero"] = p
-                # Se for bairro
                 elif not resultado["bairro"] and len(p) > 2 and not any(k in p.lower() for k in ["rua", "av", "lote"]):
                     resultado["bairro"] = p
-                # Se sobrar algo como complemento
                 elif not resultado["complemento_real"]:
                     resultado["complemento_real"] = p
 
-        # Se o logradouro contiver número no final (ex: "Avenida Espirito Santo 56") MAS não for nome de rua numerada (como "Rua 22", "Rua 15", "Rua M17")
+        # Se o logradouro contiver número no final
         if resultado["logradouro"]:
             if not re.match(r"^(Rua|R\.|Av\.|Avenida|Travessa)\s+[A-Za-z]?\d{1,4}$", resultado["logradouro"], re.IGNORECASE):
                 match_num_fim = re.search(r"^(.*?)\s+(\d{1,5})$", resultado["logradouro"])
@@ -176,5 +207,13 @@ class AddressParser:
                     resultado["logradouro"] = match_num_fim.group(1).strip()
                     if not resultado["numero"] or resultado["numero"] == str(numero_padrao):
                         resultado["numero"] = match_num_fim.group(2).strip()
+
+        # 8. Limpeza Reversa do Logradouro com base no Bairro/Cidade/Estado identificados
+        resultado["logradouro"] = cls.limpar_logradouro_com_base_oficial(
+            resultado["logradouro"],
+            bairro=resultado["bairro"],
+            cidade=resultado["cidade"],
+            estado=resultado["estado"]
+        )
 
         return resultado

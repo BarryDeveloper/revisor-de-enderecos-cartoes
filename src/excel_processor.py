@@ -189,6 +189,14 @@ class ExcelProcessor:
                 if cep_cidade and (cep_limpo_orig == "34006049" or cidade_final.upper() != cidade_orig.upper()):
                     cep_final = cep_cidade
 
+                # Limpeza reversa do logradouro usando a base oficial confirmada
+                logradouro_final = AddressParser.limpar_logradouro_com_base_oficial(
+                    logradouro_final,
+                    bairro=bairro_final,
+                    cidade=cidade_final,
+                    estado=estado_final
+                )
+
                 foi_alterado = True
             else:
                 logradouro_final = logr_orig
