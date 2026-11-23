@@ -59,7 +59,8 @@ class AddressParser:
             return True
 
         # Se tem CEP de escritório (Nova Lima 34006049) e o complemento tem outra cidade/rua
-        if str(cep_atual).replace("-", "").strip() == "34006049" and any(k in texto.lower() for k in ["rua", "av", "cocais", "santa bárbara", "359"]):
+        cep_limpo = str(cep_atual).replace("-", "").strip()
+        if cep_limpo == "34006049" and any(k in texto.lower() for k in ["rua", "av", "cocais", "santa bárbara", "359"]):
             return True
 
         padroes_endereco = [
@@ -109,23 +110,30 @@ class AddressParser:
             texto = texto[:match_uf.start()] + " " + texto[match_uf.end():]
             texto = texto.strip()
 
-        # 3. Extrair Cidade
+        # 3. Extrair Cidade (com proteção para não apagar nomes de rua como 'Rua Mariana Silva')
+        # Só extrai se a cidade for precedida de separador (, ou - ou fim de texto) e não estiver logo após 'Rua/Avenida'
         for cid in CIDADES_CONHECIDAS:
-            padrao_cid = rf"\b{re.escape(cid)}\b"
-            if re.search(padrao_cid, texto, re.IGNORECASE):
-                resultado["cidade"] = cid
-                texto = re.sub(padrao_cid, " ", texto, flags=re.IGNORECASE).strip()
-                break
+            padrao_cid = rf"(?:^|[,;\-\/]\s*)\b({re.escape(cid)})\b"
+            match_cid = re.search(padrao_cid, texto, re.IGNORECASE)
+            if match_cid:
+                # Verifica se não faz parte do início de logradouro (ex: "Rua Mariana")
+                pos = match_cid.start(1)
+                texto_antes = texto[:pos].strip()
+                if not re.search(r"\b(rua|r\.|avenida|av\.|alameda|travessa)\s*$", texto_antes, re.IGNORECASE):
+                    resultado["cidade"] = cid
+                    texto = texto[:match_cid.start()] + " " + texto[match_cid.end():]
+                    texto = texto.strip()
+                    break
 
         # 4. Extrair referências explícitas de Bairro (ex: "Bairro Guanabara", "Bairro: Chácaras do Sol - Primavera")
-        match_bairro = re.search(r"\bBairro\s*:?\s*([^,\(\)]+)", texto, re.IGNORECASE)
+        match_bairro = re.search(r"\bBairro\s*:?\s*([^,\(\)\-\/]+)", texto, re.IGNORECASE)
         if match_bairro:
             resultado["bairro"] = match_bairro.group(1).strip(" ,-")
             texto = texto[:match_bairro.start()] + " " + texto[match_bairro.end():]
             texto = texto.strip()
 
         # 5. Extrair complemento real / observações (ex: "Complexo Vs10", "Apto 103", "(Próximo a ...)")
-        match_obs = re.search(r"(\(.*?\)|complemento\s+[^,]+|Apartamento\s*\d+|Apt\s*\d+\s*bl\s*\d+|Casa\s+de\s+Andar)", texto, re.IGNORECASE)
+        match_obs = re.search(r"(\(.*?\)|complemento\s+[^,\-\/]+|Apartamento\s*\d+|Apt\s*\d+\s*bl\s*\d+|Casa\s+de\s+Andar)", texto, re.IGNORECASE)
         if match_obs:
             resultado["complemento_real"] = match_obs.group(0).replace("complemento", "").strip(" ()")
             texto = texto[:match_obs.start()] + " " + texto[match_obs.end():]
@@ -142,8 +150,9 @@ class AddressParser:
             texto = texto[:match_lote.start()] + " " + texto[match_lote.end():]
             texto = texto.strip()
 
-        # 7. Separar partes restantes por vírgula
-        partes = [re.sub(r"\s+", " ", p).strip(" ,-") for p in texto.split(",") if p.strip(" ,-")]
+        # 7. Normalizar separadores de bairro/rua com hífen ou barra (ex: "Rua A - Centro" -> "Rua A, Centro")
+        texto_normalizado = re.sub(r"\s+[\-\/]\s+", ", ", texto)
+        partes = [re.sub(r"\s+", " ", p).strip(" ,-") for p in texto_normalizado.split(",") if p.strip(" ,-")]
 
         if partes:
             resultado["logradouro"] = partes[0]
@@ -161,7 +170,6 @@ class AddressParser:
 
         # Se o logradouro contiver número no final (ex: "Avenida Espirito Santo 56") MAS não for nome de rua numerada (como "Rua 22", "Rua 15", "Rua M17")
         if resultado["logradouro"]:
-            # Se for formato "Rua 22" ou "Rua M17", não remove o número do nome da rua
             if not re.match(r"^(Rua|R\.|Av\.|Avenida|Travessa)\s+[A-Za-z]?\d{1,4}$", resultado["logradouro"], re.IGNORECASE):
                 match_num_fim = re.search(r"^(.*?)\s+(\d{1,5})$", resultado["logradouro"])
                 if match_num_fim:

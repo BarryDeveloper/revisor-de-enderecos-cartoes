@@ -22,43 +22,85 @@ class ExcelProcessor:
             return match.group(1).strip()
         return s
 
+    @staticmethod
+    def _sanitizar_valor_excel(val):
+        """Evita injeção de fórmulas no Excel se o texto começar com =, +, -, @"""
+        if val is None:
+            return ""
+        s = str(val).strip()
+        if s and s[0] in ("=", "+", "-", "@") and not (s[0] == "-" and s[1:].replace(".", "", 1).isdigit()):
+            return "'" + s
+        return val
+
     def _localizar_colunas_cabecalho(self, cabecalhos):
+        """
+        Mapeamento de colunas robusto com correspondência exata priorizada
+        e exclusão de falsos positivos (ex: NUMERO_CHAMADO, ESTADO_CIVIL).
+        """
         mapa_colunas = {}
         for idx, val in enumerate(cabecalhos):
             if val is not None:
                 nome_limpo = self._limpar_nome_cabecalho(val).upper()
                 mapa_colunas[nome_limpo] = idx
 
-        def achar_indice(palavras_chave):
-            for nome, idx in mapa_colunas.items():
-                for kw in palavras_chave:
-                    if kw.upper() in nome:
+        def achar_indice(padroes_positivos, palavras_negativas=None):
+            palavras_negativas = palavras_negativas or []
+            
+            # 1. Tentativa de correspondência exata
+            for padrao in padroes_positivos:
+                for nome, idx in mapa_colunas.items():
+                    if nome == padrao.upper():
+                        return idx
+
+            # 2. Tentativa por substring com filtro negativo rigoroso
+            for padrao in padroes_positivos:
+                for nome, idx in mapa_colunas.items():
+                    if padrao.upper() in nome:
+                        # Se contiver qualquer termo negativo proibido, rejeita
+                        if any(neg.upper() in nome for neg in palavras_negativas):
+                            continue
                         return idx
             return None
 
         return {
-            "cep": achar_indice(["END_CEP", "CEP"]),
-            "num": achar_indice(["END_NUMERO", "NUMERO"]),
-            "comp": achar_indice(["END_COMPLEMENTO", "COMPLEMENTO"]),
-            "logr": achar_indice(["END_LOGRADOURO", "LOGRADOURO", "RUA"]),
-            "bairro": achar_indice(["BAIRRO"]),
-            "cidade": achar_indice(["CIDADE", "MUNICIPIO"]),
-            "estado": achar_indice(["ESTADO", "UF"]),
-            "nasc": achar_indice(["NASCIMENTO"]),
-            "cpf": achar_indice(["CPF"]),
-            "tel": achar_indice(["TELEFONE"])
+            "cep": achar_indice(["END_CEP", "CEP_ENDERECO", "CEP"]),
+            "num": achar_indice(
+                ["END_NUMERO", "NUMERO_END", "NUM_RESIDENCIA", "NUMERO_RESIDENCIAL", "END_NUM", "NUMERO"],
+                palavras_negativas=["CHAMADO", "CONTRATO", "TELEFONE", "CPF", "ID", "CARTAO", "DOC", "CIVIL", "PROCESSO"]
+            ),
+            "comp": achar_indice(
+                ["END_COMPLEMENTO", "COMPLEMENTO_END", "COMPLEMENTO"],
+                palavras_negativas=["CHAMADO", "PROCESSO"]
+            ),
+            "logr": achar_indice(
+                ["END_LOGRADOURO", "LOGRADOURO", "RUA_ENDERECO", "ENDERECO", "RUA", "AVENIDA"],
+                palavras_negativas=["CIVIL", "CHAMADO", "EMPRESA", "CARGO", "NASCIMENTO"]
+            ),
+            "bairro": achar_indice(
+                ["END_BAIRRO", "BAIRRO"],
+                palavras_negativas=["CHAMADO", "EMPRESA"]
+            ),
+            "cidade": achar_indice(
+                ["END_CIDADE", "CIDADE", "MUNICIPIO", "LOCALIDADE"],
+                palavras_negativas=["NATURALIDADE", "CHAMADO", "EMPRESA"]
+            ),
+            "estado": achar_indice(
+                ["END_ESTADO", "ESTADO", "UF"],
+                palavras_negativas=["CIVIL", "NATURALIDADE", "CHAMADO", "EMPRESA"]
+            ),
+            "nasc": achar_indice(["BENEFICIARIO_NASCIMENTO", "DATA_NASCIMENTO", "NASCIMENTO"]),
+            "cpf": achar_indice(["BENEFICIARIO_CPF", "CPF"]),
+            "tel": achar_indice(["BENEFICIARIO_TELEFONE", "TELEFONE", "CELULAR"])
         }
 
     def processar_planilha(self, caminho_arquivo_entrada, caminho_arquivo_saida):
         if not os.path.exists(caminho_arquivo_entrada):
             raise FileNotFoundError(f"Arquivo não encontrado: {caminho_arquivo_entrada}")
 
-        # 1. Carregar planilha de entrada (somente leitura de dados para não arrastar tabelas XML corrompidas)
         wb_orig = openpyxl.load_workbook(caminho_arquivo_entrada, data_only=True)
         ws_orig = wb_orig.active
         nome_aba = ws_orig.title or "CartaoCorporativo"
 
-        # Ler todas as linhas brutas
         todas_linhas = list(ws_orig.iter_rows(values_only=True))
         if not todas_linhas:
             return 0, 0
@@ -80,11 +122,12 @@ class ExcelProcessor:
         total_sucesso = 0
         total_revisao = 0
 
-        linhas_processadas = [cabecalho_bruto]
+        # Adicionar coluna de auditoria para o time conferir
+        cabecalho_com_auditoria = cabecalho_bruto + ["REVISADO_PELO_SCRIPT"]
+        linhas_processadas = [cabecalho_com_auditoria]
 
-        # 2. Processar linhas de dados
         for row in todas_linhas[1:]:
-            if not row or not any(row):
+            if not row:
                 continue
 
             linha = list(row)
@@ -102,10 +145,14 @@ class ExcelProcessor:
             cidade_orig = get_val(col_cidade)
             estado_orig = get_val(col_estado)
 
+            # Se a linha for totalmente vazia, mantém no arquivo e marca como não alterado
             if not any([cep_orig, comp_orig, logr_orig, cidade_orig]):
+                linha.append("NÃO")
+                linhas_processadas.append(linha)
                 continue
 
             deve_extrair = AddressParser.eh_endereco_completo(comp_orig, logr_orig, cep_orig)
+            foi_alterado = False
 
             if deve_extrair:
                 dados_ext = AddressParser.extrair(
@@ -123,9 +170,26 @@ class ExcelProcessor:
                 cep_final = dados_ext["cep"] or cep_orig
                 complemento_final = dados_ext["complemento_real"]
 
+                # Validação ativa de CEP via API (ViaCEP + BrasilAPI) quando extraído do complemento
+                if dados_ext["cep"]:
+                    dados_api = self.cep_service.consultar_cep(dados_ext["cep"])
+                    if dados_api:
+                        if not bairro_final and dados_api.get("bairro"):
+                            bairro_final = dados_api["bairro"]
+                        if not logradouro_final and dados_api.get("logradouro"):
+                            logradouro_final = dados_api["logradouro"]
+                        if dados_api.get("cidade"):
+                            cidade_final = dados_api["cidade"]
+                        if dados_api.get("uf"):
+                            estado_final = dados_api["uf"]
+
+                # Proteção de CEP: só troca CEP se era o CEP da sede de Nova Lima ou se a cidade mudou para cidade de CEP único
+                cep_limpo_orig = cep_orig.replace("-", "").strip()
                 cep_cidade = self.cep_service.obter_cep_por_cidade(cidade_final, estado_final)
-                if cep_cidade and (not dados_ext["cep"] or cidade_final.upper() != cidade_orig.upper()):
+                if cep_cidade and (cep_limpo_orig == "34006049" or cidade_final.upper() != cidade_orig.upper()):
                     cep_final = cep_cidade
+
+                foi_alterado = True
             else:
                 logradouro_final = logr_orig
                 numero_final = num_orig
@@ -137,21 +201,21 @@ class ExcelProcessor:
 
             cep_formatado = self.cep_service.formatar_cep(cep_final)
 
-            # Atualizar colunas de endereço
+            # Atualizar colunas de endereço no layout original
             if col_logr is not None and col_logr < len(linha):
-                linha[col_logr] = logradouro_final
+                linha[col_logr] = self._sanitizar_valor_excel(logradouro_final)
             if col_num is not None and col_num < len(linha):
-                linha[col_num] = numero_final
+                linha[col_num] = self._sanitizar_valor_excel(numero_final)
             if col_comp is not None and col_comp < len(linha):
-                linha[col_comp] = complemento_final
+                linha[col_comp] = self._sanitizar_valor_excel(complemento_final)
             if col_bairro is not None and col_bairro < len(linha):
-                linha[col_bairro] = bairro_final
+                linha[col_bairro] = self._sanitizar_valor_excel(bairro_final)
             if col_cidade is not None and col_cidade < len(linha):
-                linha[col_cidade] = cidade_final
+                linha[col_cidade] = self._sanitizar_valor_excel(cidade_final)
             if col_estado is not None and col_estado < len(linha):
-                linha[col_estado] = estado_final
+                linha[col_estado] = self._sanitizar_valor_excel(estado_final)
             if col_cep is not None and col_cep < len(linha):
-                linha[col_cep] = cep_formatado
+                linha[col_cep] = self._sanitizar_valor_excel(cep_formatado)
 
             # Formatações de CPF, Telefone e Nascimento
             if col_cpf is not None and col_cpf < len(linha):
@@ -173,6 +237,7 @@ class ExcelProcessor:
                     except Exception:
                         pass
 
+            linha.append("SIM" if foi_alterado else "NÃO")
             linhas_processadas.append(linha)
 
             if not logradouro_final or not cidade_final or not estado_final:
@@ -182,7 +247,7 @@ class ExcelProcessor:
 
         wb_orig.close()
 
-        # 3. Criar uma nova pasta de trabalho Excel limpa (sem conflitos de XML de tabelas externas)
+        # Criar nova pasta de trabalho limpa
         wb_novo = openpyxl.Workbook()
         ws_novo = wb_novo.active
         ws_novo.title = nome_aba
@@ -191,7 +256,6 @@ class ExcelProcessor:
             for c_idx, val in enumerate(row_data, start=1):
                 ws_novo.cell(row=r_idx, column=c_idx, value=val)
 
-        # 4. Aplicar Design Profissional
         self._aplicar_design_profissional(ws_novo)
 
         os.makedirs(os.path.dirname(os.path.abspath(caminho_arquivo_saida)), exist_ok=True)
@@ -241,7 +305,7 @@ class ExcelProcessor:
                 cell.border = borda_suave
 
                 nome_col = str(ws.cell(row=1, column=col_idx).value or '').upper()
-                if any(k in nome_col for k in ["CEP", "ESTADO", "UF", "NASCIMENTO", "VIA", "CPF", "TELEFONE", "ID"]):
+                if any(k in nome_col for k in ["CEP", "ESTADO", "UF", "NASCIMENTO", "VIA", "CPF", "TELEFONE", "ID", "REVISADO"]):
                     cell.alignment = Alignment(horizontal="center", vertical="center")
                 elif any(k in nome_col for k in ["VALOR", "LIMITE"]):
                     cell.alignment = Alignment(horizontal="right", vertical="center")
