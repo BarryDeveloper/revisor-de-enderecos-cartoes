@@ -13,10 +13,11 @@ A automação:
 2. Localiza dinamicamente as colunas do Excel por correspondência exata e filtros negativos (imune a mudanças de ordem).
 3. Identifica automaticamente quando o endereço real está no campo complemento.
 4. Extrai com precisão: **Logradouro**, **Número**, **Bairro**, **Cidade**, **Estado**, **CEP** e **Complemento Real**.
-5. Substitui os dados corrigidos diretamente nas colunas originais, preservando o layout original de 25 colunas.
-6. Adiciona a coluna de auditoria **`REVISADO_PELO_SCRIPT`** (`SIM` / `NÃO`) para conferência rápida pelo time.
-7. Atualiza e valida CEPs municipais usando cache local em memória com redundância em cascata (**ViaCEP + BrasilAPI**).
-8. Salva o arquivo final revisado diretamente **na mesma pasta do arquivo original**, com design corporativo limpo e sem avisos de reparo.
+5. Substitui os dados corrigidos diretamente nas colunas originais, preservando o layout original.
+6. Adiciona colunas de backup **`LOGRADOURO_ORIGINAL`** e **`COMPLEMENTO_ORIGINAL`** tornando qualquer alteração 100% reversível e auditável.
+7. Adiciona a coluna de auditoria **`REVISADO_PELO_SCRIPT`** (`SIM` / `NÃO`) apenas quando houver alteração real de dados.
+8. Atualiza e valida CEPs municipais usando cache local em memória com redundância em cascata (**ViaCEP + BrasilAPI**) e Circuit Breaker corporativo.
+9. Salva o arquivo final revisado diretamente **na mesma pasta do arquivo original com carimbo de data/hora** (`_REVISADO_YYYYMMDD_HHMMSS.xlsx`), evitando sobrescrever edições manuais.
 
 ---
 
@@ -26,10 +27,13 @@ A automação:
 revisor-de-enderecos-cartoes/
 ├── src/
 │   ├── address_parser.py          # Motor de regras e NLP/Regex para extração de endereços
-│   ├── cep_service.py             # Validação com Cache + ViaCEP + BrasilAPI
+│   ├── cep_service.py             # Validação com Cache + ViaCEP + BrasilAPI + Circuit Breaker
 │   └── excel_processor.py         # Leitura dinâmica, substituição in-place e design Excel
+├── tests/
+│   ├── test_regressao.py          # Suíte completa de 34 testes de regressão
+│   └── test_suite.py              # Testes unitários do motor de parsing
 ├── run_automacao.py               # Script principal (com seletor visual, logging e auto-instalação)
-├── requirements.txt               # Dependências do projeto
+├── requirements.txt               # Dependências leves do projeto (openpyxl e requests)
 └── README.md                      # Documentação de uso
 ```
 
@@ -39,7 +43,7 @@ revisor-de-enderecos-cartoes/
 
 ### 1. Preparação Inicial (Apenas uma vez)
 - Ter o **Python** instalado no computador com a opção **`[x] Add python.exe to PATH`** marcada durante a instalação.
-- *(O script possui auto-instalação e baixa automaticamente as bibliotecas `pandas`, `openpyxl` e `requests` na primeira execução).*
+- *(O script possui auto-instalação e baixa automaticamente as bibliotecas leves `openpyxl` e `requests` na primeira execução).*
 
 ### 2. No Dia a Dia
 Basta dar **duplo clique no arquivo `run_automacao.py`**:

@@ -16,29 +16,39 @@ dir_raiz = os.path.dirname(os.path.abspath(__file__))
 if dir_raiz not in sys.path:
     sys.path.insert(0, dir_raiz)
 
-# Auto-instala dependências caso seja a primeira vez no computador do usuário
+from datetime import datetime
+import tkinter as tk
+from tkinter import filedialog, messagebox
+
+# Auto-instala dependências leves (openpyxl e requests) caso seja a primeira vez
 try:
-    import pandas
     import openpyxl
     import requests
 except ImportError:
     logger.info("Primeira execução detectada. Instalando dependências...")
-    subprocess.run([
-        sys.executable, "-m", "pip", "install",
-        "pandas", "openpyxl", "requests",
-        "--quiet", "--no-warn-script-location"
-    ])
-    import pandas
-    import openpyxl
-    import requests
-
-import tkinter as tk
-from tkinter import filedialog, messagebox
+    try:
+        subprocess.run([
+            sys.executable, "-m", "pip", "install",
+            "openpyxl>=3.1.0", "requests>=2.31.0",
+            "--quiet", "--no-warn-script-location"
+        ], check=True)
+        import openpyxl
+        import requests
+    except Exception as e:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        messagebox.showerror(
+            "Erro de Dependências",
+            f"Não foi possível instalar as dependências necessárias automaticamente.\n\nDetalhes: {e}"
+        )
+        root.destroy()
+        sys.exit(1)
 
 from src.excel_processor import ExcelProcessor
 
 def selecionar_arquivo_interface():
-    """Abre uma janela nativa do Windows para selecionar a planilha de entrada.
+    """Abre uma janela nativa do Windows para selecionar a planilha de entrada (.xlsx, .xlsm).
 
     Returns:
         str: Caminho absoluto do arquivo selecionado ou string vazia se cancelado.
@@ -49,7 +59,7 @@ def selecionar_arquivo_interface():
 
     arquivo_selecionado = filedialog.askopenfilename(
         title="Selecione a Planilha de Chamados de Cartão Corporativo",
-        filetypes=[("Planilhas Excel", "*.xlsx *.xls"), ("Todos os arquivos", "*.*")]
+        filetypes=[("Planilhas Excel Modernas", "*.xlsx;*.xlsm"), ("Todos os arquivos", "*.*")]
     )
     root.destroy()
     return arquivo_selecionado
@@ -67,7 +77,8 @@ def executar_processamento(arquivo_entrada, arquivo_saida=None):
     if not arquivo_saida:
         dir_origem = os.path.dirname(os.path.abspath(arquivo_entrada))
         nome_base = os.path.splitext(os.path.basename(arquivo_entrada))[0]
-        arquivo_saida = os.path.join(dir_origem, f"{nome_base}_REVISADO.xlsx")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        arquivo_saida = os.path.join(dir_origem, f"{nome_base}_REVISADO_{timestamp}.xlsx")
 
     processor = ExcelProcessor()
     total_sucesso, total_revisao = processor.processar_planilha(arquivo_entrada, arquivo_saida)
