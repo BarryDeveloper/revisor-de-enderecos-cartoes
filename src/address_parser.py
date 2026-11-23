@@ -81,22 +81,24 @@ class AddressParser:
         """
         Executa limpeza cruzada no nome da rua, removendo sobras de bairro, cidade,
         estado ou loteamento que tenham ficado grudadas quando o texto original não tinha pontuação.
-        Preserva nomes legítimos de vias como 'Rua Pará', 'Rua Bahia', 'Avenida Maranhão'.
+        Possui trava de segurança para preservar vias homônimas como 'Rua Bandeirantes', 'Rua Pará', 'Avenida Curitiba'.
         """
         if not logradouro:
             return ""
 
-        texto = str(logradouro).strip()
+        texto_original = str(logradouro).strip()
+        texto = texto_original
 
-        # 1. Se o Bairro confirmado estiver dentro do logradouro, remove
+        # 1. Se o Bairro confirmado estiver dentro do logradouro (e não for logo após 'Rua/Av'), remove
         if bairro and len(str(bairro).strip()) > 2:
-            padrao_bairro = rf"\b{re.escape(str(bairro).strip())}\b"
-            texto = re.sub(padrao_bairro, " ", texto, flags=re.IGNORECASE).strip()
+            bairro_limpo = str(bairro).strip()
+            if not re.search(rf"\b(rua|r\.|avenida|av\.|alameda|travessa)\s+{re.escape(bairro_limpo)}\b", texto, re.IGNORECASE):
+                padrao_bairro = rf"\b{re.escape(bairro_limpo)}\b"
+                texto = re.sub(padrao_bairro, " ", texto, flags=re.IGNORECASE).strip()
 
-        # 2. Se a Cidade confirmada estiver dentro do logradouro (e não for o nome da própria rua logo após 'Rua/Av'), remove
+        # 2. Se a Cidade confirmada estiver dentro do logradouro (e não for logo após 'Rua/Av'), remove
         if cidade and len(str(cidade).strip()) > 2:
             cid_limpa = str(cidade).strip()
-            # Só remove se NÃO for "Rua <Cidade>"
             if not re.search(rf"\b(rua|r\.|avenida|av\.|alameda|travessa)\s+{re.escape(cid_limpa)}\b", texto, re.IGNORECASE):
                 padrao_cid = rf"\b{re.escape(cid_limpa)}\b"
                 texto = re.sub(padrao_cid, " ", texto, flags=re.IGNORECASE).strip()
@@ -109,7 +111,17 @@ class AddressParser:
         # 4. Remover termos de lote/quadra/casa que tenham ficado colados no nome da rua
         texto = re.sub(r"\b(quadra|lote|qd|lt)\b.*$", " ", texto, flags=re.IGNORECASE).strip()
 
-        return re.sub(r"\s+", " ", texto).strip(" ,-")
+        texto_limpo = re.sub(r"\s+", " ", texto).strip(" ,-")
+
+        # TRAVA DE SEGURANÇA CONTRA VIAS HOMÔNIMAS:
+        # Se após a limpeza sobrou apenas o prefixo (ex: "Rua", "Avenida") ou ficou vazio,
+        # significa que o nome da via era idêntico ao bairro/cidade (ex: "Rua Bandeirantes").
+        # Nesses casos, mantemos o logradouro original para não apagar o nome legítimo da rua.
+        prefixos_soltos = [r"^(rua|r\.|avenida|av\.|alameda|travessa|rodovia)$", r"^$"]
+        if any(re.match(p, texto_limpo, re.IGNORECASE) for p in prefixos_soltos):
+            return texto_original
+
+        return texto_limpo
 
     @classmethod
     def extrair(cls, texto_bruto, cidade_padrao="", estado_padrao="", numero_padrao=""):
@@ -208,7 +220,7 @@ class AddressParser:
                     if not resultado["numero"] or resultado["numero"] == str(numero_padrao):
                         resultado["numero"] = match_num_fim.group(2).strip()
 
-        # 8. Limpeza Reversa do Logradouro com base no Bairro/Cidade/Estado identificados
+        # 8. Limpeza Reversa do Logradouro com Trava de Segurança
         resultado["logradouro"] = cls.limpar_logradouro_com_base_oficial(
             resultado["logradouro"],
             bairro=resultado["bairro"],
