@@ -30,8 +30,8 @@ revisor-de-enderecos-cartoes/
 │   ├── cep_service.py             # Validação com Cache + ViaCEP + BrasilAPI + Circuit Breaker
 │   └── excel_processor.py         # Leitura dinâmica, substituição in-place e design Excel
 ├── tests/
-│   ├── test_regressao.py          # Suíte completa de 34 testes de regressão
-│   └── test_suite.py              # Testes unitários do motor de parsing
+│   ├── test_regressao.py          # Suíte completa com 43 cenários de regressão e casos de borda
+│   └── test_suite.py              # Testes unitários do motor de parsing e serviços
 ├── run_automacao.py               # Script principal (com seletor visual, logging e auto-instalação)
 ├── requirements.txt               # Dependências leves do projeto (openpyxl e requests)
 └── README.md                      # Documentação de uso
@@ -51,7 +51,7 @@ Basta dar **duplo clique no arquivo `run_automacao.py`**:
 2. Escolha a planilha baixada do sistema de chamados.
 3. O script processa e revisa os endereços em poucos segundos.
 4. O arquivo final será gerado automaticamente na **mesma pasta** de onde você selecionou a planilha:
-   `[PASTA_ORIGINAL]/[NOME_DA_PLANILHA]_REVISADO.xlsx`
+   `[PASTA_ORIGINAL]/[NOME_DA_PLANILHA]_REVISADO_YYYYMMDD_HHMMSS.xlsx`
 5. Uma notificação visual de sucesso confirma a conclusão e o local do arquivo.
 
 ---

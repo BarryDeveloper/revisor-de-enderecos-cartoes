@@ -16,6 +16,7 @@ dir_raiz = os.path.dirname(os.path.abspath(__file__))
 if dir_raiz not in sys.path:
     sys.path.insert(0, dir_raiz)
 
+from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -63,35 +64,6 @@ def selecionar_arquivo_interface():
     root.destroy()
     return arquivo_selecionado
 
-def obter_caminho_saida_disponivel(dir_origem, nome_base):
-    """Gera o nome de saída limpo [NOME]_REVISADO.xlsx.
-
-    Caso o arquivo já exista e esteja aberto no Excel, gera [NOME]_REVISADO (1).xlsx
-    para evitar travamentos de permissão do Windows.
-    """
-    caminho_padrao = os.path.join(dir_origem, f"{nome_base}_REVISADO.xlsx")
-    if not os.path.exists(caminho_padrao):
-        return caminho_padrao
-
-    # Se existe, verifica se está liberado para escrita (não está travado pelo Excel)
-    try:
-        with open(caminho_padrao, "a+b"):
-            pass
-        return caminho_padrao
-    except (PermissionError, OSError):
-        # Arquivo aberto na tela, incrementa sufixo
-        idx = 1
-        while True:
-            candidato = os.path.join(dir_origem, f"{nome_base}_REVISADO ({idx}).xlsx")
-            if not os.path.exists(candidato):
-                return candidato
-            try:
-                with open(candidato, "a+b"):
-                    pass
-                return candidato
-            except (PermissionError, OSError):
-                idx += 1
-
 def executar_processamento(arquivo_entrada, arquivo_saida=None):
     """Executa o processamento do Excel e retorna os totais.
 
@@ -105,7 +77,8 @@ def executar_processamento(arquivo_entrada, arquivo_saida=None):
     if not arquivo_saida:
         dir_origem = os.path.dirname(os.path.abspath(arquivo_entrada))
         nome_base = os.path.splitext(os.path.basename(arquivo_entrada))[0]
-        arquivo_saida = obter_caminho_saida_disponivel(dir_origem, nome_base)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        arquivo_saida = os.path.join(dir_origem, f"{nome_base}_REVISADO_{timestamp}.xlsx")
 
     processor = ExcelProcessor()
     total_sucesso, total_revisao = processor.processar_planilha(arquivo_entrada, arquivo_saida)

@@ -90,6 +90,33 @@ class TestParserFuncionando(unittest.TestCase):
                          ("Rua São José", "20", "Nova Marituba", "Marituba", "PA"))
 
 
+    def test_ruas_com_data_no_nome(self):
+        r1 = P.extrair("Rua 7 de Setembro, 100, Centro")
+        self.assertEqual((r1["logradouro"], r1["numero"], r1["bairro"]), ("Rua 7 de Setembro", "100", "Centro"))
+
+        r2 = P.extrair("Rua 15 de Novembro, 50, Centro")
+        self.assertEqual((r2["logradouro"], r2["numero"], r2["bairro"]), ("Rua 15 de Novembro", "50", "Centro"))
+
+        r3 = P.extrair("Travessa 9 de Janeiro, 5, Umarizal, Belém - PA")
+        self.assertEqual((r3["logradouro"], r3["numero"], r3["bairro"], r3["cidade"], r3["estado"]),
+                         ("Travessa 9 de Janeiro", "5", "Umarizal", "Belém", "PA"))
+
+    def test_bairros_com_av_no_meio(self):
+        r1 = P.extrair("Rua das Palmeiras, 10, Gravata")
+        self.assertEqual(r1["bairro"], "Gravata")
+
+        r2 = P.extrair("Rua Principal, 20, Cavalcante")
+        self.assertEqual(r2["bairro"], "Cavalcante")
+
+    def test_rua_doutor_mariana(self):
+        r = P.extrair("Rua Doutor Mariana, 5, Centro, Belo Horizonte - MG")
+        self.assertEqual((r["logradouro"], r["cidade"]), ("Rua Doutor Mariana", "Belo Horizonte"))
+
+    def test_uf_isolada_no_meio_nao_vira_complemento(self):
+        r = P.extrair("Rua X, 123 - PA, Centro")
+        self.assertEqual(r["complemento_real"], "")
+
+
 class TestParserBugsAbertos(unittest.TestCase):
     def test_cidade_hifen_uf_nao_vira_complemento(self):
         r = P.extrair("Rua X, 123, Centro - Parauapebas - PA", "Parauapebas", "PA")
@@ -225,6 +252,18 @@ class TestPlanilhaBugsAbertos(PlanilhaBase):
         d = self.linha_saida(out)
         self.assertEqual((ok, rev, d["END_CEP"], d["END_NUMERO"], d["END_BAIRRO"], d["END_CIDADE"]),
                          (1, 0, "68515-000", "123", "Centro", "Parauapebas"))
+
+    def test_cidade_sem_acento_mantem_cep_especifico(self):
+        ok, rev, out = self.processar([linha(cep="35970-123", logr="Rua Principal", num="10", cid="BARAO DE COCAIS", uf="MG",
+                                             comp="Rua Principal, 10, Centro, Barão de Cocais - MG")])
+        d = self.linha_saida(out)
+        self.assertEqual((ok, rev, d["END_CEP"]), (1, 0, "35970-123"))
+
+    def test_passagem_belem_com_sede_vai_para_revisao_se_sem_cep(self):
+        ok, rev, out = self.processar([linha(cep=SEDE, logr="Alameda Sede", num="359", cid="Nova Lima", uf="MG",
+                                             comp="Passagem São Pedro, 10, Guamá, Belém - PA")])
+        # Sem rede para consulta de CEP de Belém, deve ir para revisão com segurança
+        self.assertEqual((ok, rev), (0, 1))
 
     def test_cep_lixo_vai_para_revisao(self):
         ok, rev, _ = self.processar([linha(cep="123", logr="Rua A", num="5", cid="Parauapebas", uf="PA")])

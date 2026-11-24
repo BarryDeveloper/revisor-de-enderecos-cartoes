@@ -37,7 +37,13 @@ CIDADES_CONHECIDAS = [
     "Mariana",
     "Nova Lima",
     "Belo Horizonte",
-    "Marituba"
+    "Marituba",
+    "Belém", "Belem",
+    "Ananindeua",
+    "Marabá", "Maraba",
+    "Santarém", "Santarem",
+    "Castanhal",
+    "Altamira"
 ]
 
 class AddressParser:
@@ -69,20 +75,22 @@ class AddressParser:
         # Se tem CEP de escritório (Nova Lima 34006049) e o complemento tem outra cidade/rua
         cep_limpo = re.sub(r"\D", "", str(cep_atual))
         if cep_limpo == "34006049":
-            termos_rua = [
-                r"\b(?:rua|avenida|alameda|travessa|rodovia|estrada)\b",
-                r"\b(?:r|av)\.",
-                r"\b(?:cocais|santa b[aá]rbara|santa barbara|marituba|parauapebas|curion[oó]polis|curionopolis|a[cç]ail[aâ]ndia|acailandia)\b"
+            termos_sede = [
+                r"\b(?:rua|avenida|alameda|travessa|rodovia|estrada|passagem|conjunto|vicinal|loteamento|vila|praca|praça)\b",
+                r"\b(?:r|av|al|trav|pass|conj|vic|lot)\.",
+                r"[-,\/–]\s*([A-Za-zÀ-ÿ]{2,})\s*[-,\/–]\s*(PA|MG|MA|SP|RJ|ES|GO|BA|PR|SC|RS|CE|PE|Par[aá]|Minas Gerais|Maranh[aã]o)\b",
+                r"\b(curion[oó]polis|curionopolis|bar[aã]o de cocais|barao de cocais|santa b[aá]rbara|santa barbara|marituba|parauapebas|a[cç]ail[aâ]ndia|acailandia|bel[eé]m|belem|ananindeua|santarem|santar[eé]m|marab[aá]|maraba|castanhal|altamira)\b",
+                r"^[A-Za-zÀ-ÿ\s\.\d]+,\s*\d+"
             ]
-            if any(re.search(p, texto, re.IGNORECASE) for p in termos_rua):
+            if any(re.search(p, texto, re.IGNORECASE) for p in termos_sede):
                 return True
             return False
 
-        # Padrões rigorosos com word boundary seguro para abreviações com ponto (r. e av.) e UFs com \b
+        # Padrões rigorosos com word boundary seguro para abreviações com ponto (r., av., pass.) e UFs com \b
         padroes_endereco = [
-            r"(?:\b(?:rua|avenida|alameda|travessa|rodovia|estrada|praca|praça)\b|\b(?:r|av|al|trav)\.)",
-            r"\b(curion[oó]polis|curionopolis|bar[aã]o de cocais|barao de cocais|santa b[aá]rbara|santa barbara|a[cç]ail[aâ]ndia|acailandia|marituba|parauapebas)\b",
-            r"[-,\/]\s*(PA|MG|MA|SP|RJ|ES|GO|BA|PR|SC|RS|CE|PE|Par[aá]|Minas Gerais|Maranh[aã]o)\b"
+            r"(?:\b(?:rua|avenida|alameda|travessa|rodovia|estrada|passagem|conjunto|vicinal|loteamento|vila|praca|praça)\b|\b(?:r|av|al|trav|pass|conj|vic|lot)\.)",
+            r"\b(curion[oó]polis|curionopolis|bar[aã]o de cocais|barao de cocais|santa b[aá]rbara|santa barbara|a[cç]ail[aâ]ndia|acailandia|marituba|parauapebas|bel[eé]m|belem|ananindeua|marab[aá]|maraba)\b",
+            r"[-,\/–]\s*(PA|MG|MA|SP|RJ|ES|GO|BA|PR|SC|RS|CE|PE|Par[aá]|Minas Gerais|Maranh[aã]o)\b"
         ]
 
         for padrao in padroes_endereco:
@@ -110,9 +118,9 @@ class AddressParser:
 
         # Lista de prefixos que nunca podem ficar sozinhos ou acompanhados só de preposição
         prefixos_incompletos = [
-            r"^(?:rua|r\.|avenida|av\.|alameda|travessa|rodovia|estrada|praça|praca)$",
-            r"^(?:rua|r\.|avenida|av\.|alameda|travessa|rodovia|estrada|praça|praca)\s+(?:da|de|do|das|dos|e|doutor|dr\.|prof\.|professor|nova|novo|são|santo|santa)$",
-            r"^(?:rua|r\.|avenida|av\.|alameda|travessa|rodovia|estrada|praça|praca)\s+principal\s+do$",
+            r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praça|praca|conjunto|conj\.|vila|loteamento|lot\.)$",
+            r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praça|praca|conjunto|conj\.|vila|loteamento|lot\.)\s+(?:da|de|do|das|dos|e|doutor|dr\.|prof\.|professor|nova|novo|são|santo|santa)$",
+            r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praça|praca|conjunto|conj\.|vila|loteamento|lot\.)\s+principal\s+do$",
             r"^$"
         ]
 
@@ -183,41 +191,60 @@ class AddressParser:
             texto = texto[:match_cep.start()] + " " + texto[match_cep.end():]
             texto = re.sub(r"\bCEP\s*:?\s*", " ", texto, flags=re.IGNORECASE).strip()
 
-        # 2. Extrair Estado / UF (procurando com hífen, barra ou vírgula)
-        match_uf = re.search(r"[-,\/]\s*([A-Za-zÀ-ÿ]{2,15})\s*$", texto)
-        if not match_uf:
-            match_uf = re.search(r"[-,\/]\s*(PA|MG|MA|SP|RJ|ES|GO|BA|PR|SC|RS|CE|PE|Par[aá]|Minas Gerais|Maranh[aã]o)\b", texto, re.IGNORECASE)
+        # 2. Extrair Cidade e Estado / UF dinamicamente (padrão <Cidade> - <UF> ou <Cidade>/<UF>)
+        match_cidade_uf = re.search(r"(?:,\s*|\s+[-–\/]\s+)([A-Za-zÀ-ÿ\s]{2,35})\s*[-,\/–]\s*([A-Za-zÀ-ÿ]{2,15})\s*$", texto)
+        if match_cidade_uf:
+            cand_cidade = match_cidade_uf.group(1).strip(" ,-–/")
+            cand_uf = match_cidade_uf.group(2).strip().upper()
+            uf_sigla = MAPA_ESTADOS.get(cand_uf, cand_uf if len(cand_uf) == 2 else "")
+            if uf_sigla and len(cand_cidade) >= 2 and not re.search(r"^(?:rua|r\.|avenida|av\.|alameda|travessa|passagem|rodovia|bairro)\b", cand_cidade, re.IGNORECASE):
+                # Se for bairro composto com nome de cidade (ex: 'Nova Marituba', 'Vila Marituba')
+                m_bairro_comp = re.match(r"^(Nova|Novo|Vila|Jardim|Jd\.?|Parque|Pq\.?|Residencial|Bairro)\s+([A-Za-zÀ-ÿ\s]+)$", cand_cidade, re.IGNORECASE)
+                if m_bairro_comp and cand_cidade.upper() not in ("NOVA LIMA", "NOVA IGUACU", "NOVA FRIBURGO"):
+                    resultado["estado"] = uf_sigla
+                    resultado["cidade"] = m_bairro_comp.group(2).strip()
+                    resultado["bairro"] = cand_cidade
+                else:
+                    resultado["estado"] = uf_sigla
+                    resultado["cidade"] = cand_cidade
+                texto = texto[:match_cidade_uf.start()].strip(" ,-\\/–")
 
-        if match_uf:
-            uf_nome = match_uf.group(1).strip().upper()
-            uf_sigla = MAPA_ESTADOS.get(uf_nome, uf_nome if len(uf_nome) == 2 else "")
-            if uf_sigla:
-                resultado["estado"] = uf_sigla
-                texto = texto[:match_uf.start()] + " " + texto[match_uf.end():]
-                texto = texto.strip(" ,-\\/")
+        # Fallback de UF se não extraído acima
+        if not resultado["estado"]:
+            match_uf = re.search(r"[-,\/–]\s*([A-Za-zÀ-ÿ]{2,15})\s*$", texto)
+            if not match_uf:
+                match_uf = re.search(r"[-,\/–]\s*(PA|MG|MA|SP|RJ|ES|GO|BA|PR|SC|RS|CE|PE|Par[aá]|Minas Gerais|Maranh[aã]o)\b", texto, re.IGNORECASE)
+            if match_uf:
+                uf_nome = match_uf.group(1).strip().upper()
+                uf_sigla = MAPA_ESTADOS.get(uf_nome, uf_nome if len(uf_nome) == 2 else "")
+                if uf_sigla:
+                    resultado["estado"] = uf_sigla
+                    texto = texto[:match_uf.start()] + " " + texto[match_uf.end():]
+                    texto = texto.strip(" ,-\\/–")
 
-        # 3. Extrair Cidade (priorizando a última ocorrência no texto caso a rua tenha nome de cidade)
-        for cid in CIDADES_CONHECIDAS:
-            padrao_cid = rf"(?:^|[\s,;\-\/]+)\b({re.escape(cid)})\b"
-            matches = list(re.finditer(padrao_cid, texto, re.IGNORECASE))
-            for match_cid in reversed(matches):
-                pos = match_cid.start(1)
-                texto_antes = texto[:pos].strip()
-                # Não extrair se for parte de nome de rua (ex: 'Rua Mariana')
-                if re.search(r"(?:\b(?:rua|avenida|alameda|travessa|rodovia)\b|\b(?:r|av)\.)\s*$", texto_antes, re.IGNORECASE):
-                    continue
-                # Se for precedido por qualificador de bairro (ex: 'Nova Marituba', 'Vila Marituba', 'Jardim Marituba')
-                # e a cidade em si não começa com essa palavra (ex: 'Nova Lima' já casa o bloco 'Nova Lima' inteiro)
-                if re.search(r"\b(?:nova|novo|vila|jardim|jd\.?|parque|pq\.?|residencial|res\.?|bairro|conjunto|conj\.?)\s*$", texto_antes, re.IGNORECASE):
-                    if not resultado["cidade"]:
-                        resultado["cidade"] = cid
-                    continue
-                resultado["cidade"] = cid
-                texto = texto[:match_cid.start()] + " " + texto[match_cid.end():]
-                texto = texto.strip(" ,-\\/")
-                break
-            if resultado["cidade"]:
-                break
+        # 3. Extrair Cidade por lista conhecida (priorizando última ocorrência e protegendo nomes próprios de pessoas/vias)
+        if not resultado["cidade"]:
+            for cid in CIDADES_CONHECIDAS:
+                padrao_cid = rf"(?:^|[\s,;\-\/–]+)\b({re.escape(cid)})\b"
+                matches = list(re.finditer(padrao_cid, texto, re.IGNORECASE))
+                for match_cid in reversed(matches):
+                    pos = match_cid.start(1)
+                    texto_antes = texto[:pos].strip()
+                    # Não extrair se for parte de nome de pessoa ou rua (ex: 'Rua Mariana', 'Rua Doutor Mariana', 'Rua da Mariana')
+                    if re.search(r"(?:\b(?:rua|avenida|alameda|travessa|rodovia|passagem|doutor|dr\.|prof\.|professor|padre|dom|almirante|general|presidente)\b|\b(?:r|av|dr|prof)\.)\s*$", texto_antes, re.IGNORECASE):
+                        continue
+                    # Se for precedido por qualificador de bairro (ex: 'Nova Marituba', 'Vila Marituba', 'Jardim Marituba')
+                    # e a cidade em si não começa com essa palavra (ex: 'Nova Lima' já casa o bloco 'Nova Lima' inteiro)
+                    if re.search(r"\b(?:nova|novo|vila|jardim|jd\.?|parque|pq\.?|residencial|res\.?|bairro|conjunto|conj\.?)\s*$", texto_antes, re.IGNORECASE):
+                        if not resultado["cidade"]:
+                            resultado["cidade"] = cid
+                        continue
+                    resultado["cidade"] = cid
+                    texto = texto[:match_cid.start()] + " " + texto[match_cid.end():]
+                    texto = texto.strip(" ,-\\/–")
+                    break
+                if resultado["cidade"]:
+                    break
 
         # 4. Extrair referências explícitas de Bairro (ex: Bairro Liberdade, Bairro: Centro)
         match_bairro = re.search(r"\bBairro\s*:?\s*([^,\(\)\-\/]+)", texto, re.IGNORECASE)
@@ -265,12 +292,24 @@ class AddressParser:
                 resultado["logradouro"] = primeira_parte
                 resto_partes = partes[1:]
 
+            palavras_proibidas_bairro = [
+                r"\brua\b", r"\br\.", r"\bav\b", r"\bav\.", r"\blote\b", r"\blt\b",
+                r"\bcasa\b", r"\bapto\b", r"\bquadra\b", r"\bqd\b", r"\bfundos\b", r"\bport[aã]o\b"
+            ]
+
             for p in resto_partes:
+                # Se for apenas UF isolada (ex: 'PA', 'MG'), não joga em complemento nem bairro
+                p_upper = p.upper()
+                if p_upper in MAPA_ESTADOS.values() or p_upper in MAPA_ESTADOS:
+                    if not resultado["estado"]:
+                        resultado["estado"] = MAPA_ESTADOS.get(p_upper, p_upper)
+                    continue
+
                 # Reconhecer números formatados: dígitos, 123A, 123-A, nº 123, S/N, sem número
                 m_num = re.match(r"^(?:n[ºo°\.]?\s*)?(\d+(?:-[a-zA-Z0-9]+|[a-zA-Z])?|[a-zA-Z]?\d+|s\/?n|sem\s+n[uú]mero)$", p, re.IGNORECASE)
                 if m_num and not resultado["numero"]:
                     resultado["numero"] = re.sub(r"^n[ºo°\.]?\s*", "", p, flags=re.IGNORECASE).strip()
-                elif not resultado["bairro"] and len(p) > 2 and not any(k in p.lower() for k in ["rua", "av", "lote", "casa", "apto", "quadra", "qd", "fundos", "portão", "portao"]):
+                elif not resultado["bairro"] and len(p) > 2 and not any(re.search(pat, p, re.IGNORECASE) for pat in palavras_proibidas_bairro):
                     resultado["bairro"] = p
                 else:
                     if not resultado["complemento_real"]:
@@ -278,36 +317,42 @@ class AddressParser:
                     else:
                         resultado["complemento_real"] = f"{resultado['complemento_real']}, {p}"
 
-        # Se o logradouro contiver número no final (ex: Rua Sete de Setembro 123)
+        # Se o logradouro contiver número no meio/final (ex: Rua Sete de Setembro 123 ou Rua São José 20 Nova Marituba)
         # Não separar se for Rodovia (ex: Rodovia PA 275, Rodovia PA-275)
         if resultado["logradouro"]:
             eh_rodovia = bool(re.match(r"^(?:Rodovia|Estrada|BR|PA|MG|SP|RJ)\b", resultado["logradouro"], re.IGNORECASE))
             if not eh_rodovia:
                 # Caso A: número no meio seguido de bairro (ex: 'Rua São José 20 Nova Marituba' ou 'Rua A 10 Centro')
+                # NÃO casar se o número for parte do nome da via por data (ex: '7 de Setembro', '15 de Novembro', '9 de Janeiro')
                 match_num_meio = re.search(r"^(.*?)\s+((?:n[ºo°\.]?\s*)?\d{1,5}(?:-[a-zA-Z0-9]+|[a-zA-Z])?|S\/?N)\s+([A-Za-zÀ-ÿ].*)$", resultado["logradouro"], re.IGNORECASE)
-                if match_num_meio and not re.match(r"^(Rua|R\.|Av\.|Avenida|Travessa|Alameda)\s+[A-Za-z]?\d{1,4}$", match_num_meio.group(1).strip(), re.IGNORECASE):
-                    nome_via = match_num_meio.group(1).strip()
-                    num_via = re.sub(r"^n[ºo°\.]?\s*", "", match_num_meio.group(2).strip(), flags=re.IGNORECASE)
+                if match_num_meio and not re.match(r"^(Rua|R\.|Av\.|Avenida|Travessa|Alameda|Passagem)\s+[A-Za-z]?\d{1,4}$", match_num_meio.group(1).strip(), re.IGNORECASE):
                     resto_via = match_num_meio.group(3).strip(" ,-")
-                    resultado["logradouro"] = nome_via
-                    if not resultado["numero"]:
-                        resultado["numero"] = num_via
-                    if not resultado["bairro"] and len(resto_via) > 2:
-                        resultado["bairro"] = resto_via
-                    elif resto_via and resto_via != resultado["bairro"]:
-                        if not resultado["complemento_real"]:
-                            resultado["complemento_real"] = resto_via
-                        else:
-                            resultado["complemento_real"] = f"{resultado['complemento_real']}, {resto_via}"
-                else:
-                    # Caso B: número no final (ex: 'Rua Sete de Setembro 123')
+                    eh_data_rua = bool(re.match(r"^(?:de|do|da|dos|das|janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b", resto_via, re.IGNORECASE))
+                    if not eh_data_rua:
+                        nome_via = match_num_meio.group(1).strip()
+                        num_via = re.sub(r"^n[ºo°\.]?\s*", "", match_num_meio.group(2).strip(), flags=re.IGNORECASE)
+                        if len(nome_via.split()) >= 2 or not re.match(r"^(?:rua|r\.|avenida|av\.|alameda|travessa|passagem|estrada|rodovia)$", nome_via, re.IGNORECASE):
+                            resultado["logradouro"] = nome_via
+                            if not resultado["numero"]:
+                                resultado["numero"] = num_via
+                            if not resultado["bairro"] and len(resto_via) > 2:
+                                resultado["bairro"] = resto_via
+                            elif resto_via and resto_via != resultado["bairro"]:
+                                if not resultado["complemento_real"]:
+                                    resultado["complemento_real"] = resto_via
+                                else:
+                                    resultado["complemento_real"] = f"{resultado['complemento_real']}, {resto_via}"
+
+                # Caso B: número no final (ex: 'Rua Sete de Setembro 123' ou 'Rua 15 de Novembro 50')
+                if not resultado["numero"] or resultado["logradouro"]:
                     match_num_fim = re.search(r"^(.*?)\s+((?:n[ºo°\.]?\s*)?\d{1,5}(?:-[a-zA-Z0-9]+|[a-zA-Z])?|S\/?N)$", resultado["logradouro"], re.IGNORECASE)
                     if match_num_fim:
                         nome_via = match_num_fim.group(1).strip()
-                        if not re.match(r"^(Rua|R\.|Av\.|Avenida|Travessa|Alameda)\s+[A-Za-z]?\d{1,4}$", resultado["logradouro"], re.IGNORECASE):
-                            resultado["logradouro"] = nome_via
-                            if not resultado["numero"]:
-                                resultado["numero"] = re.sub(r"^n[ºo°\.]?\s*", "", match_num_fim.group(2).strip(), flags=re.IGNORECASE)
+                        if not re.match(r"^(Rua|R\.|Av\.|Avenida|Travessa|Alameda|Passagem)\s+[A-Za-z]?\d{1,4}$", resultado["logradouro"], re.IGNORECASE):
+                            if len(nome_via.split()) >= 2 or not re.match(r"^(?:rua|r\.|avenida|av\.|alameda|travessa|passagem|estrada|rodovia)$", nome_via, re.IGNORECASE):
+                                resultado["logradouro"] = nome_via
+                                if not resultado["numero"]:
+                                    resultado["numero"] = re.sub(r"^n[ºo°\.]?\s*", "", match_num_fim.group(2).strip(), flags=re.IGNORECASE)
 
         # Se cidade ou estado não foram encontrados no texto, usa o padrão caso fornecido
         if not resultado["cidade"] and cidade_padrao:

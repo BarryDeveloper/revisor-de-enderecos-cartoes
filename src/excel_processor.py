@@ -151,7 +151,7 @@ class ExcelProcessor:
         total_revisao = 0
 
         # Tratar colunas de backup e auditoria (evita duplicação se reprocessado)
-        cab_upper = [str(c).upper() for c in cabecalho_bruto]
+        cab_upper = [self._remover_acentos_str(c).upper() for c in cabecalho_bruto]
         colunas_adicionar = []
         if "LOGRADOURO_ORIGINAL" not in cab_upper:
             colunas_adicionar.append("LOGRADOURO_ORIGINAL")
@@ -162,6 +162,8 @@ class ExcelProcessor:
 
         cabecalho_com_auditoria = list(cabecalho_bruto) + colunas_adicionar
         idx_auditoria = cabecalho_com_auditoria.index("REVISADO_PELO_SCRIPT")
+        idx_logr_backup = cabecalho_com_auditoria.index("LOGRADOURO_ORIGINAL")
+        idx_comp_backup = cabecalho_com_auditoria.index("COMPLEMENTO_ORIGINAL")
 
         linhas_processadas = [cabecalho_com_auditoria]
 
@@ -243,15 +245,17 @@ class ExcelProcessor:
 
                 # Proteção de CEP: só busca CEP único da cidade se NÃO havia CEP explícito no complemento
                 cep_limpo_orig = re.sub(r"\D", "", cep_orig)
+                cidade_mudou = self._remover_acentos_str(cidade_final).upper() != self._remover_acentos_str(cidade_orig).upper()
                 if not dados_ext["cep"]:
-                    cep_cidade = self.cep_service.obter_cep_por_cidade(cidade_final, estado_final)
-                    if cep_cidade and (cep_limpo_orig == "34006049" or cidade_final.upper() != cidade_orig.upper()):
-                        cep_final = cep_cidade
-                    elif cep_limpo_orig == "34006049" or cidade_final.upper() != cidade_orig.upper():
-                        # Busca reversa nos Correios por Logradouro + Cidade + UF
-                        cep_logr = self.cep_service.buscar_cep_por_logradouro(estado_final, cidade_final, logradouro_final, bairro_final)
-                        if cep_logr:
-                            cep_final = cep_logr
+                    if cep_limpo_orig == "34006049" or cidade_mudou:
+                        cep_cidade = self.cep_service.obter_cep_por_cidade(cidade_final, estado_final)
+                        if cep_cidade:
+                            cep_final = cep_cidade
+                        else:
+                            # Busca reversa nos Correios por Logradouro + Cidade + UF
+                            cep_logr = self.cep_service.buscar_cep_por_logradouro(estado_final, cidade_final, logradouro_final, bairro_final)
+                            if cep_logr:
+                                cep_final = cep_logr
 
             cep_formatado = self.cep_service.formatar_cep(cep_final)
 
@@ -304,11 +308,14 @@ class ExcelProcessor:
             )
 
             if "LOGRADOURO_ORIGINAL" in colunas_adicionar:
-                idx_logr_orig = cabecalho_com_auditoria.index("LOGRADOURO_ORIGINAL")
-                linha[idx_logr_orig] = logr_orig
+                linha[idx_logr_backup] = logr_orig
+            elif not linha[idx_logr_backup]:
+                linha[idx_logr_backup] = logr_orig
+
             if "COMPLEMENTO_ORIGINAL" in colunas_adicionar:
-                idx_comp_orig = cabecalho_com_auditoria.index("COMPLEMENTO_ORIGINAL")
-                linha[idx_comp_orig] = comp_orig
+                linha[idx_comp_backup] = comp_orig
+            elif not linha[idx_comp_backup]:
+                linha[idx_comp_backup] = comp_orig
 
             linha[idx_auditoria] = "SIM" if mudou_endereco else "NÃO"
             linhas_processadas.append(linha)
@@ -319,20 +326,23 @@ class ExcelProcessor:
             # 2. Número presente
             tem_numero = bool(str(numero_final).strip())
             # 3. Logradouro válido (não genérico)
-            tem_logradouro = bool(str(logradouro_final).strip() and not re.match(r"^(?:rua|r\.|avenida|av\.|sala|apto)$", str(logradouro_final).strip(), re.IGNORECASE))
+            tem_logradouro = bool(str(logradouro_final).strip() and not re.match(r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praça|praca|conjunto|conj\.|vila|loteamento|lot\.|sala|apto)$", str(logradouro_final).strip(), re.IGNORECASE))
             # 4. Cidade e UF válidos
             tem_cidade = bool(str(cidade_final).strip())
             tem_uf = bool(str(estado_final).strip() and len(str(estado_final).strip()) == 2)
 
             # 5. Trava da Sede: Se o CEP for da Sede (34006-049) e a cidade não for Nova Lima, vai para revisão!
+            # E se era da sede, foi detectado endereço, mas não foi resolvida uma cidade válida diferente da sede, vai para revisão!
             cep_limpo_check = re.sub(r"\D", "", str(cep_formatado))
-            cidade_norm_check = re.sub(r"\s+", " ", str(cidade_final)).strip().upper()
-            sede_invalida = (cep_limpo_check == "34006049" and cidade_norm_check not in ("NOVA LIMA", ""))
+            cidade_norm_check = self._remover_acentos_str(cidade_final).strip().upper()
+            sede_invalida = False
+            if cep_limpo_check == "34006049":
+                if cidade_norm_check not in ("NOVA LIMA", ""):
+                    sede_invalida = True
+                elif deve_extrair and (cidade_norm_check == "NOVA LIMA" or not dados_ext.get("cidade")):
+                    sede_invalida = True
 
-            # 6. Se o número da sede (359) permaneceu mas a cidade foi alterada para outra sem número extraído do texto
-            num_sede_suspeito = (str(num_orig).strip() == "359" and str(numero_final).strip() == "359" and cidade_norm_check not in ("NOVA LIMA", ""))
-
-            if tem_cep_valido and tem_numero and tem_logradouro and tem_cidade and tem_uf and not sede_invalida and not num_sede_suspeito:
+            if tem_cep_valido and tem_numero and tem_logradouro and tem_cidade and tem_uf and not sede_invalida:
                 total_sucesso += 1
             else:
                 total_revisao += 1

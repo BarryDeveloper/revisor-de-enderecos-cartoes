@@ -1,5 +1,6 @@
 import logging
 import re
+import urllib.parse
 import unicodedata
 import requests
 
@@ -129,7 +130,7 @@ class CEPService:
             return None
 
         # Limpa o nome do logradouro para a busca no ViaCEP (ex: 'Rua São José' -> 'São José')
-        termo_busca = re.sub(r"^(?:rua|r\.|avenida|av\.|alameda|travessa|rodovia|estrada|praca|praça)\s+", "", str(logradouro).strip(), flags=re.IGNORECASE).strip()
+        termo_busca = re.sub(r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praca|praça)\s+", "", str(logradouro).strip(), flags=re.IGNORECASE).strip()
         if len(termo_busca) < 3:
             termo_busca = str(logradouro).strip()
             if len(termo_busca) < 3:
@@ -137,7 +138,8 @@ class CEPService:
 
         uf_limpa = str(uf).strip().upper()
         cidade_limpa = str(cidade).strip()
-        chave_cache = (uf_limpa, _remover_acentos(cidade_limpa), _remover_acentos(termo_busca), _remover_acentos(bairro))
+        termo_busca_norm = _remover_acentos(termo_busca)
+        chave_cache = (uf_limpa, _remover_acentos(cidade_limpa), termo_busca_norm, _remover_acentos(bairro))
 
         if chave_cache in self._cache_busca_logradouro:
             return self._cache_busca_logradouro[chave_cache]
@@ -145,32 +147,44 @@ class CEPService:
         if self._api_desativada:
             return None
 
+        def _logradouro_bate_estritamente(item_retornado):
+            logr_api = item_retornado.get("logradouro", "")
+            logr_api_core = _remover_acentos(re.sub(r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praca|praça)\s+", "", logr_api, flags=re.IGNORECASE).strip())
+            return termo_busca_norm == logr_api_core or termo_busca_norm == _remover_acentos(logr_api)
+
         try:
-            url = f"https://viacep.com.br/ws/{uf_limpa}/{cidade_limpa}/{termo_busca}/json/"
+            url_uf = urllib.parse.quote(uf_limpa)
+            url_cid = urllib.parse.quote(cidade_limpa)
+            url_logr = urllib.parse.quote(termo_busca)
+            url = f"https://viacep.com.br/ws/{url_uf}/{url_cid}/{url_logr}/json/"
             resp = requests.get(url, timeout=2.5)
             if resp.status_code == 200:
                 dados = resp.json()
                 if isinstance(dados, list) and dados:
                     self._falhas_rede_consecutivas = 0
-                    # 1. Se retornou apenas 1 resultado exato nos Correios
-                    if len(dados) == 1:
-                        cep_encontrado = dados[0].get("cep")
+                    
+                    # Filtra apenas itens cujo nome de logradouro bate estritamente com o digitado
+                    candidatos_validos = [d for d in dados if _logradouro_bate_estritamente(d)]
+
+                    # 1. Se houver 1 resultado válido
+                    if len(candidatos_validos) == 1:
+                        cep_encontrado = candidatos_validos[0].get("cep")
                         self._cache_busca_logradouro[chave_cache] = cep_encontrado
                         return cep_encontrado
 
-                    # 2. Se retornou múltiplos resultados, tenta desambiguar pelo Bairro
-                    if bairro:
+                    # 2. Se houver múltiplos, tenta desambiguar pelo Bairro
+                    if bairro and candidatos_validos:
                         b_norm = _remover_acentos(bairro)
-                        candidatos = [
-                            d for d in dados
-                            if b_norm in _remover_acentos(d.get("bairro", "")) or _remover_acentos(d.get("bairro", "")) in b_norm
+                        candidatos_bairro = [
+                            d for d in candidatos_validos
+                            if b_norm and (_remover_acentos(d.get("bairro", "")) == b_norm or b_norm in _remover_acentos(d.get("bairro", "")))
                         ]
-                        if len(candidatos) == 1:
-                            cep_encontrado = candidatos[0].get("cep")
+                        if len(candidatos_bairro) == 1:
+                            cep_encontrado = candidatos_bairro[0].get("cep")
                             self._cache_busca_logradouro[chave_cache] = cep_encontrado
                             return cep_encontrado
 
-                    # Se continuar ambíguo (ruas homônimas em bairros diferentes sem confirmação), não inventa
+                    # Se continuar ambíguo ou sem match estrito, não inventa CEP
                     self._cache_busca_logradouro[chave_cache] = None
                     return None
                 else:
