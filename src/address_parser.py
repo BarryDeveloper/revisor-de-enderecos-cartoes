@@ -1,4 +1,5 @@
 import re
+import unicodedata
 
 MAPA_ESTADOS = {
     "PARÁ": "PA",
@@ -46,6 +47,26 @@ CIDADES_CONHECIDAS = [
     "Altamira"
 ]
 
+def _norm_cidade(texto):
+    nfkd = unicodedata.normalize("NFKD", str(texto or ""))
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).strip().upper()
+
+# Frases que antecedem o endereço real ("Favor entregar em: Rua X", "Endereço correto: Rua Y")
+_RE_PREFIXO_FRASE = re.compile(
+    r"^\s*(?:favor|endere[çc]o|entregar|enviar|obs|observa[çc][ãa]o)[^,:\d]{0,40}:\s*", re.IGNORECASE)
+
+# Unidade solta sem rua ("Conjunto 901", "Sala 3 Casa 2"): é complemento, não endereço
+_RE_SO_UNIDADE = re.compile(
+    r"(?:(?:conjunto|conj\.?|bloco|bl\.?|sala|unidade|apto?\.?|apartamento|casa|loja|andar)\s*[A-Za-z]?\d+[A-Za-z]?(?:\s*[-,]\s*|\s+)?)+",
+    re.IGNORECASE)
+
+# UF válida no final do trecho "Cidade/UF - complemento": siglas em maiúsculas ou nome do estado
+_UF_SIGLAS = "AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO"
+_UF_NOMES = "|".join(re.escape(n) for n in sorted(MAPA_ESTADOS, key=len, reverse=True))
+_RE_CIDADE_UF_COM_CAUDA = re.compile(
+    rf"(?:,\s*|\s+[-–\/]\s+)([A-Za-zÀ-ÿ\s]{{2,35}})\s*[-,\/–]\s*((?i:{_UF_NOMES})|{_UF_SIGLAS})"
+    r"(?P<cauda>\s*[-–]\s*[^,]+|\s*\([^)]*\))\s*$")
+
 class AddressParser:
     """
     Parser especializado para extrair e normalizar endereços contidos
@@ -67,6 +88,10 @@ class AddressParser:
         # Se o logradouro está vazio, obrigatoriamente precisamos extrair
         if not logradouro_atual or str(logradouro_atual).strip() == "":
             return True
+
+        # Só unidade/andar/bloco (ex: 'Conjunto 901', 'Sala 3'): o endereço já está nas colunas certas
+        if _RE_SO_UNIDADE.fullmatch(texto):
+            return False
 
         # Se tem outro CEP explícito no complemento (ex: 68515-000, 68.515-000, 68515000)
         if re.search(r"\b(?:\d{2}\.?\d{3}-?\d{3}|\d{5}-?\d{3}|\d{8})\b", texto):
@@ -168,6 +193,7 @@ class AddressParser:
         logradouro, numero, bairro, cidade, estado, cep, complemento_real
         """
         texto = str(texto_bruto).strip()
+        texto = _RE_PREFIXO_FRASE.sub("", texto)
         tinha_virgula = "," in texto
 
         resultado = {
@@ -177,7 +203,8 @@ class AddressParser:
             "cidade": "",
             "estado": "",
             "cep": "",
-            "complemento_real": ""
+            "complemento_real": "",
+            "cidade_incerta": False
         }
 
         if not texto:
@@ -193,6 +220,12 @@ class AddressParser:
 
         # 2. Extrair Cidade e Estado / UF dinamicamente (padrão <Cidade> - <UF> ou <Cidade>/<UF>)
         match_cidade_uf = re.search(r"(?:,\s*|\s+[-–\/]\s+)([A-Za-zÀ-ÿ\s]{2,35})\s*[-,\/–]\s*([A-Za-zÀ-ÿ]{2,15})\s*$", texto)
+        cauda_apos_uf = ""
+        if not match_cidade_uf:
+            # 'Cidade/UF - Casa B' ou 'Cidade/UF (Sala 03)': o que vem depois da UF é complemento
+            match_cidade_uf = _RE_CIDADE_UF_COM_CAUDA.search(texto)
+            if match_cidade_uf:
+                cauda_apos_uf = match_cidade_uf.group("cauda").strip(" -–()")
         if match_cidade_uf:
             cand_cidade = match_cidade_uf.group(1).strip(" ,-–/")
             cand_uf = match_cidade_uf.group(2).strip().upper()
@@ -207,7 +240,13 @@ class AddressParser:
                 else:
                     resultado["estado"] = uf_sigla
                     resultado["cidade"] = cand_cidade
+                    # Pode ser um bairro (ex: 'Rua A, 10, Centro - PA'): se for diferente da cadastrada,
+                    # o processador confirma nas APIs (ViaCEP, BrasilAPI, IBGE); sem confirmação, vai para revisão
+                    if _norm_cidade(cand_cidade) != _norm_cidade(cidade_padrao):
+                        resultado["cidade_incerta"] = True
                 texto = texto[:match_cidade_uf.start()].strip(" ,-\\/–")
+                if cauda_apos_uf:
+                    resultado["complemento_real"] = cauda_apos_uf
 
         # Fallback de UF se não extraído acima
         if not resultado["estado"]:
@@ -256,7 +295,8 @@ class AddressParser:
         # 5. Extrair complemento real / observações
         match_obs = re.search(r"(\(.*?\)|complemento\s+[^,\-\/]+|Apartamento\s*\d+|Apt\s*\d+\s*bl\s*\d+|Casa\s+de\s+Andar)", texto, re.IGNORECASE)
         if match_obs:
-            resultado["complemento_real"] = match_obs.group(0).replace("complemento", "").strip(" ()")
+            obs = match_obs.group(0).replace("complemento", "").strip(" ()")
+            resultado["complemento_real"] = f"{obs}, {resultado['complemento_real']}" if resultado["complemento_real"] else obs
             texto = texto[:match_obs.start()] + " " + texto[match_obs.end():]
             texto = texto.strip()
 
@@ -282,7 +322,7 @@ class AddressParser:
         if partes:
             primeira_parte = partes[0]
             # Se for apenas 'Apto 101' ou 'Sala 359' sem nome de rua, não joga como logradouro
-            if re.match(r"^(?:Apto|Apartamento|Sala|Bloco|Casa|Garagem)\s*\d+[a-zA-Z]?$", primeira_parte, re.IGNORECASE):
+            if re.match(r"^(?:Apto|Apartamento|Sala|Bloco|Casa|Garagem|Conjunto|Conj\.?|Unidade|Loja)\s*\d+[a-zA-Z]?$", primeira_parte, re.IGNORECASE):
                 if not resultado["complemento_real"]:
                     resultado["complemento_real"] = primeira_parte
                 else:

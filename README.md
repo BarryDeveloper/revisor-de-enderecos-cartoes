@@ -14,10 +14,12 @@ A automação:
 3. Identifica automaticamente quando o endereço real está no campo complemento.
 4. Extrai com precisão: **Logradouro**, **Número**, **Bairro**, **Cidade**, **Estado**, **CEP** e **Complemento Real**.
 5. Substitui os dados corrigidos diretamente nas colunas originais, preservando o layout original.
-6. Adiciona colunas de backup **`LOGRADOURO_ORIGINAL`** e **`COMPLEMENTO_ORIGINAL`** tornando qualquer alteração 100% reversível e auditável.
+6. Não grava colunas de backup: a planilha original nunca é alterada (o resultado é um arquivo novo), então para comparar basta abrir as duas.
 7. Adiciona a coluna de auditoria **`REVISADO_PELO_SCRIPT`** (`SIM` / `NÃO`) apenas quando houver alteração real de dados.
-8. Atualiza e valida CEPs municipais usando cache local em memória com redundância em cascata (**ViaCEP + BrasilAPI**) e Circuit Breaker corporativo.
-9. Salva o arquivo final revisado diretamente **na mesma pasta do arquivo original com carimbo de data/hora** (`_REVISADO_YYYYMMDD_HHMMSS.xlsx`), evitando sobrescrever edições manuais.
+8. Adiciona **`STATUS_EMISSAO`** (`PRONTO` / `REVISAR`) e **`MOTIVO_REVISAO`** (o que impediu a emissão automática), para a equipe filtrar só o que precisa de conferência manual.
+9. Tolera textos como `Favor entregar em: Rua X...`, `Cidade/UF - Casa B` e complementos só de unidade (`Conjunto 901`, `Sala 3`), que não são tratados como endereço.
+10. Atualiza e valida CEPs municipais usando cache local em memória com redundância em cascata (**ViaCEP + BrasilAPI**) e Circuit Breaker corporativo.
+11. Salva o arquivo final revisado diretamente **na mesma pasta do arquivo original com carimbo de data/hora** (`_REVISADO_YYYYMMDD_HHMMSS.xlsx`), evitando sobrescrever edições manuais.
 
 ---
 
@@ -30,7 +32,7 @@ revisor-de-enderecos-cartoes/
 │   ├── cep_service.py             # Validação com Cache + ViaCEP + BrasilAPI + Circuit Breaker
 │   └── excel_processor.py         # Leitura dinâmica, substituição in-place e design Excel
 ├── tests/
-│   ├── test_regressao.py          # Suíte completa com 43 cenários de regressão e casos de borda
+│   ├── test_regressao.py          # Suíte de regressão e casos de borda (APIs simuladas)
 │   └── test_suite.py              # Testes unitários do motor de parsing e serviços
 ├── run_automacao.py               # Script principal (com seletor visual, logging e auto-instalação)
 ├── requirements.txt               # Dependências leves do projeto (openpyxl e requests)
@@ -58,9 +60,14 @@ Basta dar **duplo clique no arquivo `run_automacao.py`**:
 
 ## ⚠️ Limitações & Casos Especiais
 
-* **Regra de Substituição de CEP:** O script só substitui o CEP do sistema se:
-  1. O CEP cadastrado for o CEP da sede corporativa de Nova Lima (`34006-049`) usado como contorno.
-  2. A cidade real extraída do complemento for diferente da cidade cadastrada no chamado e pertencer à tabela de municípios de CEP único.
+* **Regra de Substituição de CEP:** O CEP cadastrado é tratado como uma "chave" que libera o campo (pode ser de qualquer lugar do país). O script só mexe no CEP quando o complemento traz um endereço:
+  1. Se o complemento traz um CEP, esse CEP é usado e a cidade e a UF são corrigidas por ele.
+  2. Se traz o endereço sem CEP, o CEP é descoberto pelo endereço na ViaCEP: cidade de CEP único, ou rua desempatada pelo número da casa (faixas dos Correios) e pelo bairro. A tabela local de cidades de CEP único é só cache.
+  3. Se o cadastro já estava correto e o complemento só repete o endereço, o CEP cadastrado é mantido.
+  4. Se o CEP do endereço não puder ser confirmado, a linha vai para revisão manual.
+  5. Complemento sem endereço (ex: `Apto 101`) não altera a linha.
+* **Validação de Cidade:** Quando a cidade do complemento é diferente da cadastrada, ela é confirmada por API: ViaCEP, reserva BrasilAPI e reserva IBGE. Se não for confirmada (ex: um bairro escrito como `Centro - PA`) ou se nenhuma API responder, a linha vai para revisão manual.
+* **CEP Antigo de Outra Cidade:** Se a cidade mudou e nenhum CEP novo foi encontrado, a linha vai para revisão em vez de manter o CEP antigo.
 * **Linhas Vazias:** Linhas sem endereço ou em branco são mantidas no arquivo para preservar a contagem exata de chamados e recebem `REVISADO_PELO_SCRIPT = NÃO`.
 * **Resiliência de Rede (Modo Offline):** Caso os serviços públicos de CEP (ViaCEP e BrasilAPI) estejam temporariamente indisponíveis, o script utiliza o cache local em memória e mantém os dados originais para revisão manual, sem travar a execução.
 

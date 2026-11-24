@@ -1,6 +1,5 @@
 import os
 import re
-from datetime import datetime
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -99,11 +98,25 @@ class ExcelProcessor:
             "estado": achar_indice(
                 ["END_ESTADO", "ESTADO", "UF"],
                 palavras_negativas=["CIVIL", "NATURALIDADE", "CHAMADO", "EMPRESA"]
-            ),
-            "nasc": achar_indice(["BENEFICIARIO_NASCIMENTO", "DATA_NASCIMENTO", "NASCIMENTO"]),
-            "cpf": achar_indice(["BENEFICIARIO_CPF", "CPF"]),
-            "tel": achar_indice(["BENEFICIARIO_TELEFONE", "TELEFONE", "CELULAR"])
+            )
         }
+
+    def _cep_cadastrado_confere(self, cep_orig, logr_orig, num_orig, logradouro_final, numero_final,
+                                cidade_final, estado_final, cidade_mudou):
+        """True se o CEP cadastrado já corresponde ao endereço do complemento (mesma rua e cidade)."""
+        if cidade_mudou:
+            return False
+        # Complemento só repete o que já estava nas colunas de endereço
+        if logr_orig and self.cep_service.mesmo_logradouro(logr_orig, logradouro_final) and (
+                not numero_final or str(numero_final) == str(num_orig)):
+            return True
+        # A consulta do CEP cadastrado devolve a mesma rua e cidade do complemento
+        dados = self.cep_service.consultar_cep(cep_orig)
+        if dados and dados.get("logradouro") and self.cep_service.mesmo_logradouro(dados["logradouro"], logradouro_final):
+            mesma_cidade = self._remover_acentos_str(dados.get("cidade")).upper() == self._remover_acentos_str(cidade_final).upper()
+            mesma_uf = str(dados.get("uf", "")).upper() == str(estado_final).strip().upper()
+            return mesma_cidade and mesma_uf
+        return False
 
     def processar_planilha(self, caminho_arquivo_entrada, caminho_arquivo_saida):
         if not os.path.exists(caminho_arquivo_entrada):
@@ -143,27 +156,23 @@ class ExcelProcessor:
         col_bairro = cols.get("bairro")
         col_cidade = cols.get("cidade")
         col_estado = cols.get("estado")
-        col_nasc = cols.get("nasc")
-        col_cpf = cols.get("cpf")
-        col_tel = cols.get("tel")
-
         total_sucesso = 0
         total_revisao = 0
 
         # Tratar colunas de backup e auditoria (evita duplicação se reprocessado)
         cab_upper = [self._remover_acentos_str(c).upper() for c in cabecalho_bruto]
         colunas_adicionar = []
-        if "LOGRADOURO_ORIGINAL" not in cab_upper:
-            colunas_adicionar.append("LOGRADOURO_ORIGINAL")
-        if "COMPLEMENTO_ORIGINAL" not in cab_upper:
-            colunas_adicionar.append("COMPLEMENTO_ORIGINAL")
         if "REVISADO_PELO_SCRIPT" not in cab_upper:
             colunas_adicionar.append("REVISADO_PELO_SCRIPT")
+        if "STATUS_EMISSAO" not in cab_upper:
+            colunas_adicionar.append("STATUS_EMISSAO")
+        if "MOTIVO_REVISAO" not in cab_upper:
+            colunas_adicionar.append("MOTIVO_REVISAO")
 
         cabecalho_com_auditoria = list(cabecalho_bruto) + colunas_adicionar
         idx_auditoria = cabecalho_com_auditoria.index("REVISADO_PELO_SCRIPT")
-        idx_logr_backup = cabecalho_com_auditoria.index("LOGRADOURO_ORIGINAL")
-        idx_comp_backup = cabecalho_com_auditoria.index("COMPLEMENTO_ORIGINAL")
+        idx_status = cabecalho_com_auditoria.index("STATUS_EMISSAO")
+        idx_motivo = cabecalho_com_auditoria.index("MOTIVO_REVISAO")
 
         linhas_processadas = [cabecalho_com_auditoria]
 
@@ -203,6 +212,11 @@ class ExcelProcessor:
             estado_final = estado_orig
             cep_final = cep_orig
             complemento_final = comp_orig
+            cidade_incerta = False
+            cep_pendente = False
+            cep_sugerido_bairro = None
+            cep_cadastrado_bate_bairro = False
+            via_parecida = None
 
             if deve_extrair:
                 dados_ext = AddressParser.extrair(
@@ -218,6 +232,7 @@ class ExcelProcessor:
                 bairro_final = dados_ext["bairro"] or bairro_orig
                 cep_final = dados_ext["cep"] or cep_orig
                 complemento_final = dados_ext["complemento_real"]
+                cidade_incerta = dados_ext.get("cidade_incerta", False)
 
                 # Tratamento de número com proteção da sede:
                 # Se o número não foi encontrado no texto, só herda o número de cadastro se NÃO for da sede
@@ -240,22 +255,57 @@ class ExcelProcessor:
                             logradouro_final = dados_api["logradouro"]
                         if dados_api.get("cidade"):
                             cidade_final = dados_api["cidade"]
+                            cidade_incerta = False
                         if dados_api.get("uf"):
                             estado_final = dados_api["uf"]
 
-                # Proteção de CEP: só busca CEP único da cidade se NÃO havia CEP explícito no complemento
+                # Cidade extraída do texto e diferente da cadastrada: confirma nas APIs (ViaCEP, BrasilAPI, IBGE)
+                cidade_reclassificada = False
+                if cidade_incerta and cidade_final and estado_final:
+                    cidade_oficial = self.cep_service.validar_cidade(estado_final, cidade_final)
+                    if cidade_oficial:
+                        cidade_final = cidade_oficial
+                        cidade_incerta = False
+                    elif self.cep_service.cidade_inexistente(estado_final, cidade_final):
+                        # As APIs responderam que não é cidade (ex: 'Centro - PA'): era o bairro.
+                        # Mantém cidade e UF cadastradas; a linha segue para revisão manual.
+                        if not dados_ext["bairro"]:
+                            bairro_final = cidade_final
+                        cidade_final = cidade_orig
+                        estado_final = estado_orig
+                        cidade_reclassificada = True
+
+                # O CEP cadastrado é só a "chave" que libera o campo (pode ser de qualquer lugar).
+                # Se o complemento traz o endereço real sem CEP, o CEP é descoberto pelo endereço.
                 cep_limpo_orig = re.sub(r"\D", "", cep_orig)
+                eh_sede = cep_limpo_orig == "34006049"
                 cidade_mudou = self._remover_acentos_str(cidade_final).upper() != self._remover_acentos_str(cidade_orig).upper()
-                if not dados_ext["cep"]:
-                    if cep_limpo_orig == "34006049" or cidade_mudou:
-                        cep_cidade = self.cep_service.obter_cep_por_cidade(cidade_final, estado_final)
-                        if cep_cidade:
-                            cep_final = cep_cidade
+                if not dados_ext["cep"] and not cidade_reclassificada and (eh_sede or cidade_mudou or dados_ext["logradouro"]):
+                    if not eh_sede and self._cep_cadastrado_confere(
+                            cep_orig, logr_orig, num_orig, logradouro_final, numero_final,
+                            cidade_final, estado_final, cidade_mudou):
+                        pass  # o cadastro já estava correto e o complemento só repete o endereço
+                    else:
+                        cep_novo = self.cep_service.resolver_cep_endereco(
+                            estado_final, cidade_final, logradouro_final, bairro_final, numero_final)
+                        if cep_novo:
+                            cep_final = cep_novo
                         else:
-                            # Busca reversa nos Correios por Logradouro + Cidade + UF
-                            cep_logr = self.cep_service.buscar_cep_por_logradouro(estado_final, cidade_final, logradouro_final, bairro_final)
-                            if cep_logr:
-                                cep_final = cep_logr
+                            # Não foi possível confirmar o CEP do endereço real: revisão manual.
+                            # Bairros/comunidades com CEP único (ex: Minérios) viram só uma sugestão no motivo.
+                            cep_pendente = True
+                            # Se o CEP cadastrado já é do mesmo bairro/cidade, não sugere outro: só avisa
+                            dados_cad = self.cep_service.consultar_cep(cep_orig)
+                            if dados_cad and bairro_final and (
+                                    self._remover_acentos_str(dados_cad.get("bairro")).upper() == self._remover_acentos_str(bairro_final).upper()
+                                    and self._remover_acentos_str(dados_cad.get("cidade")).upper() == self._remover_acentos_str(cidade_final).upper()):
+                                cep_cadastrado_bate_bairro = True
+                            else:
+                                cep_sugerido_bairro = self.cep_service.sugerir_cep_bairro(
+                                    estado_final, cidade_final, bairro_final)
+                                if not cep_sugerido_bairro:
+                                    via_parecida = self.cep_service.sugerir_via_parecida(
+                                        estado_final, cidade_final, logradouro_final, (complemento_final, comp_orig))
 
             cep_formatado = self.cep_service.formatar_cep(cep_final)
 
@@ -275,27 +325,6 @@ class ExcelProcessor:
             if col_cep is not None and col_cep < len(linha):
                 linha[col_cep] = cep_formatado
 
-            # Formatações de CPF, Telefone e Nascimento
-            if col_cpf is not None and col_cpf < len(linha):
-                cpf_val = get_val(col_cpf)
-                cpf_digits = re.sub(r"\D", "", cpf_val)
-                if cpf_digits and len(cpf_digits) <= 11:
-                    linha[col_cpf] = cpf_digits.zfill(11)
-
-            if col_tel is not None and col_tel < len(linha):
-                linha[col_tel] = get_val(col_tel)
-
-            if col_nasc is not None and col_nasc < len(linha):
-                nasc_val = linha[col_nasc]
-                if isinstance(nasc_val, datetime):
-                    linha[col_nasc] = nasc_val.strftime("%d/%m/%Y")
-                elif isinstance(nasc_val, str) and "-" in nasc_val:
-                    try:
-                        dt = datetime.strptime(nasc_val.split()[0], "%Y-%m-%d")
-                        linha[col_nasc] = dt.strftime("%d/%m/%Y")
-                    except Exception:
-                        pass
-
             # Auditoria precisa: verifica se algum campo de endereço de fato mudou
             mudou_endereco = (
                 logradouro_final != logr_orig or
@@ -307,16 +336,6 @@ class ExcelProcessor:
                 cep_formatado != self.cep_service.formatar_cep(cep_orig)
             )
 
-            if "LOGRADOURO_ORIGINAL" in colunas_adicionar:
-                linha[idx_logr_backup] = logr_orig
-            elif not linha[idx_logr_backup]:
-                linha[idx_logr_backup] = logr_orig
-
-            if "COMPLEMENTO_ORIGINAL" in colunas_adicionar:
-                linha[idx_comp_backup] = comp_orig
-            elif not linha[idx_comp_backup]:
-                linha[idx_comp_backup] = comp_orig
-
             linha[idx_auditoria] = "SIM" if mudou_endereco else "NÃO"
             linhas_processadas.append(linha)
 
@@ -324,7 +343,8 @@ class ExcelProcessor:
             # 1. Precisa de CEP formatado com 8 dígitos (00000-000)
             tem_cep_valido = bool(re.match(r"^\d{5}-\d{3}$", str(cep_formatado)))
             # 2. Número presente
-            tem_numero = bool(str(numero_final).strip())
+            # '0' e '00' são preenchimento do formulário, não número de imóvel (o valor da coluna não é alterado)
+            tem_numero = bool(str(numero_final).strip()) and not re.fullmatch(r"0+", str(numero_final).strip())
             # 3. Logradouro válido (não genérico)
             tem_logradouro = bool(str(logradouro_final).strip() and not re.match(r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praça|praca|conjunto|conj\.|vila|loteamento|lot\.|sala|apto)$", str(logradouro_final).strip(), re.IGNORECASE))
             # 4. Cidade e UF válidos
@@ -342,10 +362,49 @@ class ExcelProcessor:
                 elif deve_extrair and (cidade_norm_check == "NOVA LIMA" or not dados_ext.get("cidade")):
                     sede_invalida = True
 
-            if tem_cep_valido and tem_numero and tem_logradouro and tem_cidade and tem_uf and not sede_invalida:
-                total_sucesso += 1
-            else:
+            motivos = []
+            if not tem_cep_valido:
+                motivos.append("CEP ausente ou inválido")
+            if not tem_numero:
+                motivos.append("Número ausente ou zero")
+            if not tem_logradouro:
+                motivos.append("Logradouro ausente ou genérico")
+            if not tem_cidade:
+                motivos.append("Cidade ausente")
+            if not str(bairro_final).strip():
+                motivos.append("Bairro não identificado, verificar coluna de complemento")
+            if not tem_uf:
+                motivos.append("UF ausente ou inválida")
+            if sede_invalida:
+                motivos.append("CEP da sede (Nova Lima) com endereço de outra cidade")
+            if cidade_incerta:
+                motivos.append("Cidade do complemento não confirmada nas APIs")
+            if cep_pendente:
+                if cep_cadastrado_bate_bairro:
+                    motivos.append(
+                        f"CEP cadastrado ({self.cep_service.formatar_cep(cep_orig)}) bate com o bairro {bairro_final}, "
+                        "mas a rua não foi encontrada (confirmar)")
+                elif cep_sugerido_bairro:
+                    motivos.append(
+                        f"Rua não encontrada; CEP do bairro {bairro_final}: "
+                        f"{self.cep_service.formatar_cep(cep_sugerido_bairro)} (confirmar)")
+                elif via_parecida:
+                    nome_via, bairro_via, cep_via, no_texto = via_parecida
+                    extra = ", bairro que aparece no complemento" if no_texto else ""
+                    motivos.append(
+                        f"CEP do endereço real não encontrado; ViaCEP tem {nome_via}, bairro {bairro_via}{extra}: "
+                        f"{self.cep_service.formatar_cep(cep_via)} (conferir tipo da via e bairro)")
+                else:
+                    motivos.append("CEP do endereço real não encontrado")
+
+            if motivos:
+                linha[idx_status] = "REVISAR"
+                linha[idx_motivo] = "; ".join(motivos)
                 total_revisao += 1
+            else:
+                linha[idx_status] = "PRONTO"
+                linha[idx_motivo] = ""
+                total_sucesso += 1
 
         wb_orig.close()
 
@@ -409,7 +468,7 @@ class ExcelProcessor:
                 cell.border = borda_suave
 
                 nome_col = str(ws.cell(row=1, column=col_idx).value or '').upper()
-                if any(k in nome_col for k in ["CEP", "ESTADO", "UF", "NASCIMENTO", "VIA", "CPF", "TELEFONE", "ID", "REVISADO"]):
+                if any(k in nome_col for k in ["CEP", "ESTADO", "UF", "NASCIMENTO", "VIA", "CPF", "TELEFONE", "ID", "REVISADO", "STATUS"]):
                     cell.alignment = Alignment(horizontal="center", vertical="center")
                 elif any(k in nome_col for k in ["VALOR", "LIMITE"]):
                     cell.alignment = Alignment(horizontal="right", vertical="center")
