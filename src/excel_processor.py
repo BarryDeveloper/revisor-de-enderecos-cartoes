@@ -215,6 +215,7 @@ class ExcelProcessor:
             cidade_incerta = False
             cep_pendente = False
             cep_cadastrado_bate_bairro = False
+            cep_diverge_cidade = ""
             via_parecida = None
 
             if deve_extrair:
@@ -302,6 +303,18 @@ class ExcelProcessor:
                                 via_parecida = self.cep_service.sugerir_via_parecida(
                                     estado_final, cidade_final, logradouro_final, (complemento_final, comp_orig))
 
+            # Cadastro sem endereço no complemento: confere se o CEP pertence à cidade/UF informadas.
+            # Só avisa (nunca troca o CEP) e só roda se a API respondeu.
+            if not deve_extrair and re.fullmatch(r"\d{5}-?\d{3}", cep_orig):
+                dados_cep = self.cep_service.consultar_cep(cep_orig)
+                if dados_cep and dados_cep.get("cidade") and dados_cep.get("uf") and cidade_orig and estado_orig:
+                    mesma_cidade = self._remover_acentos_str(dados_cep["cidade"]).upper() == self._remover_acentos_str(cidade_orig).upper()
+                    mesma_uf = str(dados_cep["uf"]).upper() == estado_orig.strip().upper()
+                    if not (mesma_cidade and mesma_uf):
+                        cep_diverge_cidade = (
+                            f"CEP cadastrado é de {dados_cep['cidade']}/{dados_cep['uf']}, "
+                            f"mas a cidade é {cidade_orig}/{estado_orig}")
+
             cep_formatado = self.cep_service.formatar_cep(cep_final)
 
             # Atualizar colunas de endereço no layout original
@@ -372,6 +385,8 @@ class ExcelProcessor:
                 motivos.append("UF ausente ou inválida")
             if sede_invalida:
                 motivos.append("CEP da sede (Nova Lima) com endereço de outra cidade")
+            if cep_diverge_cidade:
+                motivos.append(cep_diverge_cidade)
             if cidade_incerta:
                 motivos.append("Cidade do complemento não confirmada nas APIs")
             if cep_pendente:

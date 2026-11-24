@@ -484,6 +484,28 @@ class TestViaParecida(PlanilhaBase):
 
 
 
+class TestCepDivergeCidade(PlanilhaBase):
+    def test_cadastro_com_cep_de_outra_cidade_vai_para_revisao_sem_trocar_o_cep(self):
+        ok, rev, out = self.processar([linha(cep="68515-000", logr="Rua Tres", num="10", bairro="Jardelândia", cid="Marituba", uf="PA")])
+        d = self.linha_saida(out)
+        self.assertEqual((ok, rev, d["END_CEP"], d["STATUS_EMISSAO"]), (0, 1, "68515-000", "REVISAR"))
+        self.assertIn("CEP cadastrado é de Parauapebas/PA, mas a cidade é Marituba/PA", d["MOTIVO_REVISAO"])
+
+    def test_cadastro_coerente_continua_pronto(self):
+        ok, rev, _ = self.processar([linha(cep="68515-000", logr="Rua A", num="10", bairro="Centro", cid="Parauapebas", uf="PA")])
+        self.assertEqual((ok, rev), (1, 0))
+
+    def test_api_fora_do_ar_nao_cria_aviso(self):
+        ok, rev, _ = self.processar([linha(cep="99999-999", logr="Rua A", num="10", bairro="Centro", cid="Marituba", uf="PA")])
+        self.assertEqual((ok, rev), (1, 0))
+
+    def test_endereco_no_complemento_nao_passa_por_essa_validacao(self):
+        ok, rev, out = self.processar([linha(cep="68515-000", logr="Rua Qualquer", num="1", bairro="Centro", cid="Marituba", uf="PA",
+                                             comp="Rua B, 20, Centro, Marituba - PA")])
+        self.assertNotIn("CEP cadastrado é de", str(self.linha_saida(out)["MOTIVO_REVISAO"]))
+
+
+
 class TestStatusEmissao(PlanilhaBase):
     def test_bairro_nao_identificado_vai_para_revisao_com_aviso(self):
         ok, rev, out = self.processar([linha(cep="68515-000", logr="RUA A11 AMAZONIA", num="5", cid="Parauapebas", uf="PA")])
