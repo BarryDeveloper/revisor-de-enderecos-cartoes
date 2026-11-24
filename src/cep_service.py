@@ -441,26 +441,3 @@ class CEPService:
         no_texto = bool(bairro_norm) and any(bairro_norm in _remover_acentos(t) for t in textos_extras)
         return item.get("logradouro"), item.get("bairro"), item.get("cep"), no_texto
 
-    def sugerir_cep_bairro(self, uf, cidade, bairro):
-        """
-        Sugestão (nunca automática) para bairros/comunidades com CEP único, como 'Minérios'.
-        Busca o bairro digitado como nome de via e só devolve se vier um único registro da mesma
-        cidade/UF cujo bairro seja igual ao digitado (sem acento). Retorna o CEP ou None.
-        """
-        uf_limpa = self._uf_valida(uf)
-        cidade_limpa = str(cidade or "").strip()
-        bairro_limpo = str(bairro or "").strip()
-        if not uf_limpa or len(cidade_limpa) < 3 or len(bairro_limpo) < 3:
-            return None
-        url = (f"https://viacep.com.br/ws/{urllib.parse.quote(uf_limpa, safe='')}/"
-               f"{urllib.parse.quote(cidade_limpa, safe='')}/{urllib.parse.quote(bairro_limpo, safe='')}/json/")
-        dados = self._get_json(url)
-        if not isinstance(dados, list) or len(dados) != 1:
-            return None
-        item = dados[0]
-        if (_remover_acentos(item.get("bairro", "")) == _remover_acentos(bairro_limpo)
-                and _remover_acentos(item.get("localidade", "")) == _remover_acentos(cidade_limpa)
-                and str(item.get("uf", "")).upper() == uf_limpa):
-            return item.get("cep")
-        return None
-

@@ -458,43 +458,6 @@ class TestParserPlanilhaReal(unittest.TestCase):
                          ("Avenida João Pinheiro", "530", "Centro", "Itabira", "Ap 204"))
 
 
-def api_bairro(url, timeout=None):
-    """Simula o ViaCEP de Parauapebas: 'Rua 3' só existe em outros bairros; 'Minérios' tem um CEP único."""
-    if "viacep.com.br/ws/PA/Parauapebas/Rua" in url:
-        return _Resp(200, [{"cep": "68310-438", "logradouro": "Rua 3", "bairro": "Cidade Nova", "localidade": "Parauapebas", "uf": "PA"},
-                           {"cep": "68310-340", "logradouro": "Rua 3", "bairro": "Primavera", "localidade": "Parauapebas", "uf": "PA"}])
-    if "viacep.com.br/ws/PA/Parauapebas/Min" in url:
-        return _Resp(200, [{"cep": "68316-155", "logradouro": "Comunidade Urbana Bairro dos Minérios", "bairro": "Minérios", "localidade": "Parauapebas", "uf": "PA"}])
-    if "viacep.com.br/ws/PA/Parauapebas/Cidade" in url:
-        return _Resp(200, [{"cep": "68310-438", "logradouro": "Rua 3", "bairro": "Cidade Nova", "localidade": "Parauapebas", "uf": "PA"},
-                           {"cep": "68310-999", "logradouro": "Rua 9", "bairro": "Cidade Nova", "localidade": "Parauapebas", "uf": "PA"}])
-    raise requests.ConnectionError("sem rede")
-
-
-class TestSugestaoCepBairro(PlanilhaBase):
-    def _rodar(self, comp):
-        ent, sai = os.path.join(self.tmp.name, "b.xlsx"), os.path.join(self.tmp.name, "b_out.xlsx")
-        wb = openpyxl.Workbook(); ws = wb.active; ws.append(CABECALHO)
-        ws.append(linha(cep="68515-000", logr="Rua Qualquer", num="1", bairro="Centro", cid="Parauapebas", uf="PA", comp=comp))
-        wb.save(ent)
-        with mock.patch("src.cep_service.requests.get", side_effect=api_bairro):
-            ExcelProcessor().processar_planilha(ent, sai)
-        return self.linha_saida(openpyxl.load_workbook(sai))
-
-    def test_bairro_com_cep_unico_vira_sugestao_no_motivo_sem_mudar_o_cep(self):
-        for bairro in ("Minérios", "Minerios"):
-            d = self._rodar(f"Rua 03, 16, Qd 39, {bairro}, Parauapebas - PA")
-            self.assertEqual((d["END_CEP"], d["STATUS_EMISSAO"]), ("68515-000", "REVISAR"))
-            self.assertIn("CEP do bairro", d["MOTIVO_REVISAO"])
-            self.assertIn("68316-155", d["MOTIVO_REVISAO"])
-
-    def test_bairro_com_varios_registros_nao_gera_sugestao(self):
-        d = self._rodar("Rua 03, 16, Qd 39, Cidade Nova, Parauapebas - PA")
-        self.assertEqual(d["STATUS_EMISSAO"], "REVISAR")
-        self.assertNotIn("CEP do bairro", d["MOTIVO_REVISAO"])
-
-
-
 def api_via_parecida(url, timeout=None):
     if "viacep.com.br/ws/PA/Parauapebas/Rua/" in url:
         return _Resp(200, [{"cep": "68310-358", "logradouro": "Rua Marcos Freire", "bairro": "Primavera", "localidade": "Parauapebas", "uf": "PA"},

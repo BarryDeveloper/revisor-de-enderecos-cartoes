@@ -214,7 +214,6 @@ class ExcelProcessor:
             complemento_final = comp_orig
             cidade_incerta = False
             cep_pendente = False
-            cep_sugerido_bairro = None
             cep_cadastrado_bate_bairro = False
             via_parecida = None
 
@@ -292,20 +291,16 @@ class ExcelProcessor:
                             cep_final = cep_novo
                         else:
                             # Não foi possível confirmar o CEP do endereço real: revisão manual.
-                            # Bairros/comunidades com CEP único (ex: Minérios) viram só uma sugestão no motivo.
                             cep_pendente = True
-                            # Se o CEP cadastrado já é do mesmo bairro/cidade, não sugere outro: só avisa
+                            # Se o CEP cadastrado já é do mesmo bairro/cidade, só avisa
                             dados_cad = self.cep_service.consultar_cep(cep_orig)
                             if dados_cad and bairro_final and (
                                     self._remover_acentos_str(dados_cad.get("bairro")).upper() == self._remover_acentos_str(bairro_final).upper()
                                     and self._remover_acentos_str(dados_cad.get("cidade")).upper() == self._remover_acentos_str(cidade_final).upper()):
                                 cep_cadastrado_bate_bairro = True
                             else:
-                                cep_sugerido_bairro = self.cep_service.sugerir_cep_bairro(
-                                    estado_final, cidade_final, bairro_final)
-                                if not cep_sugerido_bairro:
-                                    via_parecida = self.cep_service.sugerir_via_parecida(
-                                        estado_final, cidade_final, logradouro_final, (complemento_final, comp_orig))
+                                via_parecida = self.cep_service.sugerir_via_parecida(
+                                    estado_final, cidade_final, logradouro_final, (complemento_final, comp_orig))
 
             cep_formatado = self.cep_service.formatar_cep(cep_final)
 
@@ -384,10 +379,6 @@ class ExcelProcessor:
                     motivos.append(
                         f"CEP cadastrado ({self.cep_service.formatar_cep(cep_orig)}) bate com o bairro {bairro_final}, "
                         "mas a rua não foi encontrada (confirmar)")
-                elif cep_sugerido_bairro:
-                    motivos.append(
-                        f"Rua não encontrada; CEP do bairro {bairro_final}: "
-                        f"{self.cep_service.formatar_cep(cep_sugerido_bairro)} (confirmar)")
                 elif via_parecida:
                     nome_via, bairro_via, cep_via, no_texto = via_parecida
                     extra = ", bairro que aparece no complemento" if no_texto else ""
