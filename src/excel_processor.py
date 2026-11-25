@@ -7,6 +7,7 @@ from openpyxl.utils import get_column_letter
 from src.address_parser import AddressParser
 from src.cep_service import CEPService
 
+
 class ExcelProcessor:
     def __init__(self):
         self.cep_service = CEPService()
@@ -217,6 +218,7 @@ class ExcelProcessor:
             cep_cadastrado_bate_bairro = False
             cep_diverge_cidade = ""
             via_parecida = None
+            logradouro_ambiguo = False
 
             if deve_extrair:
                 dados_ext = AddressParser.extrair(
@@ -302,6 +304,9 @@ class ExcelProcessor:
                             else:
                                 via_parecida = self.cep_service.sugerir_via_parecida(
                                     estado_final, cidade_final, logradouro_final, (complemento_final, comp_orig))
+                            logradouro_ambiguo = self.cep_service.logradouro_ambiguo_na_cidade(
+                                estado_final, cidade_final, logradouro_final, bairro_final, numero_final
+                            )
 
             # Cadastro sem endereço no complemento: confere se o CEP pertence à cidade/UF informadas.
             # Só avisa (nunca troca o CEP) e só roda se a API respondeu.
@@ -400,6 +405,10 @@ class ExcelProcessor:
                     motivos.append(
                         f"CEP do endereço real não encontrado; ViaCEP tem {nome_via}, bairro {bairro_via}{extra}: "
                         f"{self.cep_service.formatar_cep(cep_via)} (conferir tipo da via e bairro)")
+                elif logradouro_ambiguo:
+                    motivos.append(
+                        f"Logradouro múltiplo/genérico em {cidade_final}/{estado_final} ({logradouro_final}) — "
+                        "ViaCEP não filtra por bairro; conferir CEP manualmente")
                 else:
                     motivos.append("CEP do endereço real não encontrado")
 
