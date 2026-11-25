@@ -1,4 +1,5 @@
 import os
+import logging
 import re
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -8,9 +9,12 @@ from src.address_parser import AddressParser
 from src.cep_service import CEPService
 
 
+logger = logging.getLogger('ExcelProcessor')
+
 class ExcelProcessor:
     def __init__(self):
         self.cep_service = CEPService()
+        self.avisos = []
 
     @staticmethod
     def _remover_acentos_str(texto):
@@ -177,251 +181,276 @@ class ExcelProcessor:
 
         linhas_processadas = [cabecalho_com_auditoria]
 
-        for row in todas_linhas[1:]:
+        for n_linha, row in enumerate(todas_linhas[1:], start=1):
+            if n_linha % 25 == 0:
+                logger.info('Processando linha %d de %d...', n_linha, len(todas_linhas) - 1)
             if not row:
                 continue
 
-            linha = list(row)
-            while len(linha) < len(cabecalho_com_auditoria):
-                linha.append("")
+            linha_original = list(row)
+            while len(linha_original) < len(cabecalho_com_auditoria):
+                linha_original.append('')
+            n_antes = len(linhas_processadas)
+            try:
+                linha = list(row)
+                while len(linha) < len(cabecalho_com_auditoria):
+                    linha.append("")
 
-            def get_val(idx):
-                if idx is None or idx >= len(linha) or linha[idx] is None:
-                    return ""
-                v = str(linha[idx]).strip()
-                return re.sub(r"\.0$", "", v)
+                def get_val(idx):
+                    if idx is None or idx >= len(linha) or linha[idx] is None:
+                        return ""
+                    v = str(linha[idx]).strip()
+                    return re.sub(r"\.0$", "", v)
 
-            cep_orig = get_val(col_cep)
-            num_orig = get_val(col_num)
-            comp_orig = get_val(col_comp)
-            logr_orig = get_val(col_logr)
-            bairro_orig = get_val(col_bairro)
-            cidade_orig = get_val(col_cidade)
-            estado_orig = get_val(col_estado)
+                cep_orig = get_val(col_cep)
+                num_orig = get_val(col_num)
+                comp_orig = get_val(col_comp)
+                logr_orig = get_val(col_logr)
+                bairro_orig = get_val(col_bairro)
+                cidade_orig = get_val(col_cidade)
+                estado_orig = get_val(col_estado)
 
-            # Se a linha for totalmente vazia, mantém intacta
-            if not any([cep_orig, comp_orig, logr_orig, cidade_orig]):
-                linha[idx_auditoria] = "NÃO"
-                linhas_processadas.append(linha)
-                continue
+                # Se a linha for totalmente vazia, mantém intacta
+                if not any([cep_orig, comp_orig, logr_orig, cidade_orig]):
+                    linha[idx_auditoria] = "NÃO"
+                    linhas_processadas.append(linha)
+                    continue
 
-            deve_extrair = AddressParser.eh_endereco_completo(comp_orig, logr_orig, cep_orig)
-            logradouro_final = logr_orig
-            numero_final = num_orig
-            bairro_final = bairro_orig
-            cidade_final = cidade_orig
-            estado_final = estado_orig
-            cep_final = cep_orig
-            complemento_final = comp_orig
-            cidade_incerta = False
-            cep_pendente = False
-            cep_cadastrado_bate_bairro = False
-            cep_diverge_cidade = ""
-            via_parecida = None
-            logradouro_ambiguo = False
+                deve_extrair = AddressParser.eh_endereco_completo(comp_orig, logr_orig, cep_orig)
+                logradouro_final = logr_orig
+                numero_final = num_orig
+                bairro_final = bairro_orig
+                cidade_final = cidade_orig
+                estado_final = estado_orig
+                cep_final = cep_orig
+                complemento_final = comp_orig
+                cidade_incerta = False
+                cep_pendente = False
+                cep_cadastrado_bate_bairro = False
+                cep_diverge_cidade = ""
+                via_parecida = None
+                logradouro_ambiguo = False
 
-            if deve_extrair:
-                dados_ext = AddressParser.extrair(
-                    texto_bruto=comp_orig,
-                    cidade_padrao=cidade_orig,
-                    estado_padrao=estado_orig,
-                    numero_padrao=num_orig
+                if deve_extrair:
+                    dados_ext = AddressParser.extrair(
+                        texto_bruto=comp_orig,
+                        cidade_padrao=cidade_orig,
+                        estado_padrao=estado_orig,
+                        numero_padrao=num_orig
+                    )
+
+                    logradouro_final = dados_ext["logradouro"] or logr_orig
+                    cidade_final = dados_ext["cidade"] or cidade_orig
+                    estado_final = dados_ext["estado"] or estado_orig
+                    bairro_final = dados_ext["bairro"] or bairro_orig
+                    cep_final = dados_ext["cep"] or cep_orig
+                    complemento_final = dados_ext["complemento_real"]
+                    cidade_incerta = dados_ext.get("cidade_incerta", False)
+
+                    # Tratamento de número com proteção da sede:
+                    # Se o número não foi encontrado no texto, só herda o número de cadastro se NÃO for da sede
+                    cep_limpo_orig = re.sub(r"\D", "", cep_orig)
+                    if dados_ext["numero"]:
+                        numero_final = dados_ext["numero"]
+                    else:
+                        if cep_limpo_orig == "34006049":
+                            numero_final = ""
+                        else:
+                            numero_final = num_orig
+
+                    # Validação de CEP via API quando extraído do complemento
+                    if dados_ext["cep"]:
+                        dados_api = self.cep_service.consultar_cep(dados_ext["cep"])
+                        if dados_api:
+                            if not bairro_final and dados_api.get("bairro"):
+                                bairro_final = dados_api["bairro"]
+                            if not logradouro_final and dados_api.get("logradouro"):
+                                logradouro_final = dados_api["logradouro"]
+                            if dados_api.get("cidade"):
+                                cidade_final = dados_api["cidade"]
+                                cidade_incerta = False
+                            if dados_api.get("uf"):
+                                estado_final = dados_api["uf"]
+
+                    # Cidade extraída do texto e diferente da cadastrada: confirma nas APIs (ViaCEP, BrasilAPI, IBGE)
+                    cidade_reclassificada = False
+                    if cidade_incerta and cidade_final and estado_final:
+                        cidade_oficial = self.cep_service.validar_cidade(estado_final, cidade_final)
+                        if cidade_oficial:
+                            cidade_final = cidade_oficial
+                            cidade_incerta = False
+                        elif self.cep_service.cidade_inexistente(estado_final, cidade_final):
+                            # As APIs responderam que não é cidade (ex: 'Centro - PA'): era o bairro.
+                            # Mantém cidade e UF cadastradas; a linha segue para revisão manual.
+                            if not dados_ext["bairro"]:
+                                bairro_final = cidade_final
+                            cidade_final = cidade_orig
+                            estado_final = estado_orig
+                            cidade_reclassificada = True
+
+                    # O CEP cadastrado é só a "chave" que libera o campo (pode ser de qualquer lugar).
+                    # Se o complemento traz o endereço real sem CEP, o CEP é descoberto pelo endereço.
+                    cep_limpo_orig = re.sub(r"\D", "", cep_orig)
+                    eh_sede = cep_limpo_orig == "34006049"
+                    cidade_mudou = self._remover_acentos_str(cidade_final).upper() != self._remover_acentos_str(cidade_orig).upper()
+                    if not dados_ext["cep"] and not cidade_reclassificada and (eh_sede or cidade_mudou or dados_ext["logradouro"]):
+                        if not eh_sede and self._cep_cadastrado_confere(
+                                cep_orig, logr_orig, num_orig, logradouro_final, numero_final,
+                                cidade_final, estado_final, cidade_mudou):
+                            pass  # o cadastro já estava correto e o complemento só repete o endereço
+                        else:
+                            cep_novo = self.cep_service.resolver_cep_endereco(
+                                estado_final, cidade_final, logradouro_final, bairro_final, numero_final)
+                            if cep_novo:
+                                cep_final = cep_novo
+                            else:
+                                # Não foi possível confirmar o CEP do endereço real: revisão manual.
+                                cep_pendente = True
+                                # Se o CEP cadastrado já é do mesmo bairro/cidade, só avisa
+                                dados_cad = self.cep_service.consultar_cep(cep_orig)
+                                if dados_cad and bairro_final and (
+                                        self._remover_acentos_str(dados_cad.get("bairro")).upper() == self._remover_acentos_str(bairro_final).upper()
+                                        and self._remover_acentos_str(dados_cad.get("cidade")).upper() == self._remover_acentos_str(cidade_final).upper()):
+                                    cep_cadastrado_bate_bairro = True
+                                else:
+                                    via_parecida = self.cep_service.sugerir_via_parecida(
+                                        estado_final, cidade_final, logradouro_final, (complemento_final, comp_orig))
+                                logradouro_ambiguo = self.cep_service.logradouro_ambiguo_na_cidade(
+                                    estado_final, cidade_final, logradouro_final, bairro_final, numero_final
+                                )
+
+                # Cadastro sem endereço no complemento: confere se o CEP pertence à cidade/UF informadas.
+                # Só avisa (nunca troca o CEP) e só roda se a API respondeu.
+                if not deve_extrair and re.fullmatch(r"\d{5}-?\d{3}", cep_orig):
+                    dados_cep = self.cep_service.consultar_cep(cep_orig)
+                    if dados_cep and dados_cep.get("cidade") and dados_cep.get("uf") and cidade_orig and estado_orig:
+                        mesma_cidade = self._remover_acentos_str(dados_cep["cidade"]).upper() == self._remover_acentos_str(cidade_orig).upper()
+                        mesma_uf = str(dados_cep["uf"]).upper() == estado_orig.strip().upper()
+                        if not (mesma_cidade and mesma_uf):
+                            cep_diverge_cidade = (
+                                f"CEP cadastrado é de {dados_cep['cidade']}/{dados_cep['uf']}, "
+                                f"mas a cidade é {cidade_orig}/{estado_orig}")
+
+                cep_formatado = self.cep_service.formatar_cep(cep_final)
+
+                # Atualizar colunas de endereço no layout original
+                if col_logr is not None and col_logr < len(linha):
+                    linha[col_logr] = logradouro_final
+                if col_num is not None and col_num < len(linha):
+                    linha[col_num] = numero_final
+                if col_comp is not None and col_comp < len(linha):
+                    linha[col_comp] = complemento_final
+                if col_bairro is not None and col_bairro < len(linha):
+                    linha[col_bairro] = bairro_final
+                if col_cidade is not None and col_cidade < len(linha):
+                    linha[col_cidade] = cidade_final
+                if col_estado is not None and col_estado < len(linha):
+                    linha[col_estado] = estado_final
+                if col_cep is not None and col_cep < len(linha):
+                    linha[col_cep] = cep_formatado
+
+                # Auditoria precisa: verifica se algum campo de endereço de fato mudou
+                mudou_endereco = (
+                    logradouro_final != logr_orig or
+                    numero_final != num_orig or
+                    complemento_final != comp_orig or
+                    bairro_final != bairro_orig or
+                    cidade_final != cidade_orig or
+                    estado_final != estado_orig or
+                    cep_formatado != self.cep_service.formatar_cep(cep_orig)
                 )
 
-                logradouro_final = dados_ext["logradouro"] or logr_orig
-                cidade_final = dados_ext["cidade"] or cidade_orig
-                estado_final = dados_ext["estado"] or estado_orig
-                bairro_final = dados_ext["bairro"] or bairro_orig
-                cep_final = dados_ext["cep"] or cep_orig
-                complemento_final = dados_ext["complemento_real"]
-                cidade_incerta = dados_ext.get("cidade_incerta", False)
+                linha[idx_auditoria] = "SIM" if mudou_endereco else "NÃO"
+                linhas_processadas.append(linha)
 
-                # Tratamento de número com proteção da sede:
-                # Se o número não foi encontrado no texto, só herda o número de cadastro se NÃO for da sede
-                cep_limpo_orig = re.sub(r"\D", "", cep_orig)
-                if dados_ext["numero"]:
-                    numero_final = dados_ext["numero"]
-                else:
-                    if cep_limpo_orig == "34006049":
-                        numero_final = ""
+                # Critério rigoroso de 'Pronto para Emissão':
+                # 1. Precisa de CEP formatado com 8 dígitos (00000-000)
+                tem_cep_valido = bool(re.match(r"^\d{5}-\d{3}$", str(cep_formatado)))
+                # 2. Número presente
+                # '0' e '00' são preenchimento do formulário, não número de imóvel (o valor da coluna não é alterado)
+                tem_numero = bool(str(numero_final).strip()) and not re.fullmatch(r"0+", str(numero_final).strip())
+                # 3. Logradouro válido (não genérico)
+                tem_logradouro = bool(str(logradouro_final).strip() and not re.match(r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praça|praca|conjunto|conj\.|vila|loteamento|lot\.|sala|apto)$", str(logradouro_final).strip(), re.IGNORECASE))
+                # 4. Cidade e UF válidos
+                tem_cidade = bool(str(cidade_final).strip())
+                tem_uf = bool(str(estado_final).strip() and len(str(estado_final).strip()) == 2)
+
+                # 5. Trava da Sede: Se o CEP for da Sede (34006-049) e a cidade não for Nova Lima, vai para revisão!
+                # E se era da sede, foi detectado endereço, mas não foi resolvida uma cidade válida diferente da sede, vai para revisão!
+                cep_limpo_check = re.sub(r"\D", "", str(cep_formatado))
+                cidade_norm_check = self._remover_acentos_str(cidade_final).strip().upper()
+                sede_invalida = False
+                if cep_limpo_check == "34006049":
+                    if cidade_norm_check not in ("NOVA LIMA", ""):
+                        sede_invalida = True
+                    elif deve_extrair and (cidade_norm_check == "NOVA LIMA" or not dados_ext.get("cidade")):
+                        sede_invalida = True
+
+                motivos = []
+                if not tem_cep_valido:
+                    motivos.append("CEP ausente ou inválido")
+                if not tem_numero:
+                    motivos.append("Número ausente ou zero")
+                if not tem_logradouro:
+                    motivos.append("Logradouro ausente ou genérico")
+                if not tem_cidade:
+                    motivos.append("Cidade ausente")
+                if not str(bairro_final).strip():
+                    motivos.append("Bairro não identificado, verificar coluna de complemento")
+                if not tem_uf:
+                    motivos.append("UF ausente ou inválida")
+                if sede_invalida:
+                    motivos.append("CEP da sede (Nova Lima) com endereço de outra cidade")
+                if cep_diverge_cidade:
+                    motivos.append(cep_diverge_cidade)
+                api_fora = self.cep_service._api_desativada
+                if api_fora and (cep_pendente or cidade_incerta):
+                    motivos.append("Consulta de CEP indisponível (rede/proxy): não foi possível confirmar; conferir manualmente")
+                if cidade_incerta and not api_fora:
+                    motivos.append("Cidade do complemento não confirmada nas APIs")
+                if cep_pendente and not api_fora:
+                    if cep_cadastrado_bate_bairro:
+                        motivos.append(
+                            f"CEP cadastrado ({self.cep_service.formatar_cep(cep_orig)}) bate com o bairro {bairro_final}, "
+                            "mas a rua não foi encontrada (confirmar)")
+                    elif via_parecida:
+                        nome_via, bairro_via, cep_via, no_texto = via_parecida
+                        extra = ", bairro que aparece no complemento" if no_texto else ""
+                        motivos.append(
+                            f"CEP do endereço real não encontrado; ViaCEP tem {nome_via}, bairro {bairro_via}{extra}: "
+                            f"{self.cep_service.formatar_cep(cep_via)} (conferir tipo da via e bairro)")
+                    elif logradouro_ambiguo:
+                        motivos.append(
+                            f"Logradouro múltiplo/genérico em {cidade_final}/{estado_final} ({logradouro_final}) — "
+                            "ViaCEP não filtra por bairro; conferir CEP manualmente")
                     else:
-                        numero_final = num_orig
+                        motivos.append("CEP do endereço real não encontrado")
 
-                # Validação de CEP via API quando extraído do complemento
-                if dados_ext["cep"]:
-                    dados_api = self.cep_service.consultar_cep(dados_ext["cep"])
-                    if dados_api:
-                        if not bairro_final and dados_api.get("bairro"):
-                            bairro_final = dados_api["bairro"]
-                        if not logradouro_final and dados_api.get("logradouro"):
-                            logradouro_final = dados_api["logradouro"]
-                        if dados_api.get("cidade"):
-                            cidade_final = dados_api["cidade"]
-                            cidade_incerta = False
-                        if dados_api.get("uf"):
-                            estado_final = dados_api["uf"]
-
-                # Cidade extraída do texto e diferente da cadastrada: confirma nas APIs (ViaCEP, BrasilAPI, IBGE)
-                cidade_reclassificada = False
-                if cidade_incerta and cidade_final and estado_final:
-                    cidade_oficial = self.cep_service.validar_cidade(estado_final, cidade_final)
-                    if cidade_oficial:
-                        cidade_final = cidade_oficial
-                        cidade_incerta = False
-                    elif self.cep_service.cidade_inexistente(estado_final, cidade_final):
-                        # As APIs responderam que não é cidade (ex: 'Centro - PA'): era o bairro.
-                        # Mantém cidade e UF cadastradas; a linha segue para revisão manual.
-                        if not dados_ext["bairro"]:
-                            bairro_final = cidade_final
-                        cidade_final = cidade_orig
-                        estado_final = estado_orig
-                        cidade_reclassificada = True
-
-                # O CEP cadastrado é só a "chave" que libera o campo (pode ser de qualquer lugar).
-                # Se o complemento traz o endereço real sem CEP, o CEP é descoberto pelo endereço.
-                cep_limpo_orig = re.sub(r"\D", "", cep_orig)
-                eh_sede = cep_limpo_orig == "34006049"
-                cidade_mudou = self._remover_acentos_str(cidade_final).upper() != self._remover_acentos_str(cidade_orig).upper()
-                if not dados_ext["cep"] and not cidade_reclassificada and (eh_sede or cidade_mudou or dados_ext["logradouro"]):
-                    if not eh_sede and self._cep_cadastrado_confere(
-                            cep_orig, logr_orig, num_orig, logradouro_final, numero_final,
-                            cidade_final, estado_final, cidade_mudou):
-                        pass  # o cadastro já estava correto e o complemento só repete o endereço
-                    else:
-                        cep_novo = self.cep_service.resolver_cep_endereco(
-                            estado_final, cidade_final, logradouro_final, bairro_final, numero_final)
-                        if cep_novo:
-                            cep_final = cep_novo
-                        else:
-                            # Não foi possível confirmar o CEP do endereço real: revisão manual.
-                            cep_pendente = True
-                            # Se o CEP cadastrado já é do mesmo bairro/cidade, só avisa
-                            dados_cad = self.cep_service.consultar_cep(cep_orig)
-                            if dados_cad and bairro_final and (
-                                    self._remover_acentos_str(dados_cad.get("bairro")).upper() == self._remover_acentos_str(bairro_final).upper()
-                                    and self._remover_acentos_str(dados_cad.get("cidade")).upper() == self._remover_acentos_str(cidade_final).upper()):
-                                cep_cadastrado_bate_bairro = True
-                            else:
-                                via_parecida = self.cep_service.sugerir_via_parecida(
-                                    estado_final, cidade_final, logradouro_final, (complemento_final, comp_orig))
-                            logradouro_ambiguo = self.cep_service.logradouro_ambiguo_na_cidade(
-                                estado_final, cidade_final, logradouro_final, bairro_final, numero_final
-                            )
-
-            # Cadastro sem endereço no complemento: confere se o CEP pertence à cidade/UF informadas.
-            # Só avisa (nunca troca o CEP) e só roda se a API respondeu.
-            if not deve_extrair and re.fullmatch(r"\d{5}-?\d{3}", cep_orig):
-                dados_cep = self.cep_service.consultar_cep(cep_orig)
-                if dados_cep and dados_cep.get("cidade") and dados_cep.get("uf") and cidade_orig and estado_orig:
-                    mesma_cidade = self._remover_acentos_str(dados_cep["cidade"]).upper() == self._remover_acentos_str(cidade_orig).upper()
-                    mesma_uf = str(dados_cep["uf"]).upper() == estado_orig.strip().upper()
-                    if not (mesma_cidade and mesma_uf):
-                        cep_diverge_cidade = (
-                            f"CEP cadastrado é de {dados_cep['cidade']}/{dados_cep['uf']}, "
-                            f"mas a cidade é {cidade_orig}/{estado_orig}")
-
-            cep_formatado = self.cep_service.formatar_cep(cep_final)
-
-            # Atualizar colunas de endereço no layout original
-            if col_logr is not None and col_logr < len(linha):
-                linha[col_logr] = logradouro_final
-            if col_num is not None and col_num < len(linha):
-                linha[col_num] = numero_final
-            if col_comp is not None and col_comp < len(linha):
-                linha[col_comp] = complemento_final
-            if col_bairro is not None and col_bairro < len(linha):
-                linha[col_bairro] = bairro_final
-            if col_cidade is not None and col_cidade < len(linha):
-                linha[col_cidade] = cidade_final
-            if col_estado is not None and col_estado < len(linha):
-                linha[col_estado] = estado_final
-            if col_cep is not None and col_cep < len(linha):
-                linha[col_cep] = cep_formatado
-
-            # Auditoria precisa: verifica se algum campo de endereço de fato mudou
-            mudou_endereco = (
-                logradouro_final != logr_orig or
-                numero_final != num_orig or
-                complemento_final != comp_orig or
-                bairro_final != bairro_orig or
-                cidade_final != cidade_orig or
-                estado_final != estado_orig or
-                cep_formatado != self.cep_service.formatar_cep(cep_orig)
-            )
-
-            linha[idx_auditoria] = "SIM" if mudou_endereco else "NÃO"
-            linhas_processadas.append(linha)
-
-            # Critério rigoroso de 'Pronto para Emissão':
-            # 1. Precisa de CEP formatado com 8 dígitos (00000-000)
-            tem_cep_valido = bool(re.match(r"^\d{5}-\d{3}$", str(cep_formatado)))
-            # 2. Número presente
-            # '0' e '00' são preenchimento do formulário, não número de imóvel (o valor da coluna não é alterado)
-            tem_numero = bool(str(numero_final).strip()) and not re.fullmatch(r"0+", str(numero_final).strip())
-            # 3. Logradouro válido (não genérico)
-            tem_logradouro = bool(str(logradouro_final).strip() and not re.match(r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praça|praca|conjunto|conj\.|vila|loteamento|lot\.|sala|apto)$", str(logradouro_final).strip(), re.IGNORECASE))
-            # 4. Cidade e UF válidos
-            tem_cidade = bool(str(cidade_final).strip())
-            tem_uf = bool(str(estado_final).strip() and len(str(estado_final).strip()) == 2)
-
-            # 5. Trava da Sede: Se o CEP for da Sede (34006-049) e a cidade não for Nova Lima, vai para revisão!
-            # E se era da sede, foi detectado endereço, mas não foi resolvida uma cidade válida diferente da sede, vai para revisão!
-            cep_limpo_check = re.sub(r"\D", "", str(cep_formatado))
-            cidade_norm_check = self._remover_acentos_str(cidade_final).strip().upper()
-            sede_invalida = False
-            if cep_limpo_check == "34006049":
-                if cidade_norm_check not in ("NOVA LIMA", ""):
-                    sede_invalida = True
-                elif deve_extrair and (cidade_norm_check == "NOVA LIMA" or not dados_ext.get("cidade")):
-                    sede_invalida = True
-
-            motivos = []
-            if not tem_cep_valido:
-                motivos.append("CEP ausente ou inválido")
-            if not tem_numero:
-                motivos.append("Número ausente ou zero")
-            if not tem_logradouro:
-                motivos.append("Logradouro ausente ou genérico")
-            if not tem_cidade:
-                motivos.append("Cidade ausente")
-            if not str(bairro_final).strip():
-                motivos.append("Bairro não identificado, verificar coluna de complemento")
-            if not tem_uf:
-                motivos.append("UF ausente ou inválida")
-            if sede_invalida:
-                motivos.append("CEP da sede (Nova Lima) com endereço de outra cidade")
-            if cep_diverge_cidade:
-                motivos.append(cep_diverge_cidade)
-            if cidade_incerta:
-                motivos.append("Cidade do complemento não confirmada nas APIs")
-            if cep_pendente:
-                if cep_cadastrado_bate_bairro:
-                    motivos.append(
-                        f"CEP cadastrado ({self.cep_service.formatar_cep(cep_orig)}) bate com o bairro {bairro_final}, "
-                        "mas a rua não foi encontrada (confirmar)")
-                elif via_parecida:
-                    nome_via, bairro_via, cep_via, no_texto = via_parecida
-                    extra = ", bairro que aparece no complemento" if no_texto else ""
-                    motivos.append(
-                        f"CEP do endereço real não encontrado; ViaCEP tem {nome_via}, bairro {bairro_via}{extra}: "
-                        f"{self.cep_service.formatar_cep(cep_via)} (conferir tipo da via e bairro)")
-                elif logradouro_ambiguo:
-                    motivos.append(
-                        f"Logradouro múltiplo/genérico em {cidade_final}/{estado_final} ({logradouro_final}) — "
-                        "ViaCEP não filtra por bairro; conferir CEP manualmente")
+                if motivos:
+                    linha[idx_status] = "REVISAR"
+                    linha[idx_motivo] = "; ".join(motivos)
+                    total_revisao += 1
                 else:
-                    motivos.append("CEP do endereço real não encontrado")
-
-            if motivos:
-                linha[idx_status] = "REVISAR"
-                linha[idx_motivo] = "; ".join(motivos)
+                    linha[idx_status] = "PRONTO"
+                    linha[idx_motivo] = ""
+                    total_sucesso += 1
+            except Exception as exc:
+                logger.exception('Falha ao processar a linha %d', n_linha + 1)
+                del linhas_processadas[n_antes:]
+                linha_err = list(linha_original)
+                linha_err[idx_auditoria] = 'NÃO'
+                linha_err[idx_status] = 'REVISAR'
+                linha_err[idx_motivo] = f'Erro ao processar esta linha ({type(exc).__name__}): conferir manualmente'
+                linhas_processadas.append(linha_err)
                 total_revisao += 1
-            else:
-                linha[idx_status] = "PRONTO"
-                linha[idx_motivo] = ""
-                total_sucesso += 1
 
         wb_orig.close()
+
+        self.avisos = []
+        if self.cep_service._api_desativada:
+            self.avisos.append('As consultas de CEP (ViaCEP/BrasilAPI/IBGE) ficaram indisponíveis (rede/proxy). Linhas com endereço no complemento foram para REVISAR por falta de confirmação; linhas sem endereço no complemento NÃO tiveram o CEP conferido.')
+        if total_sucesso + total_revisao >= 10 and total_revisao > 0.5 * (total_sucesso + total_revisao):
+            self.avisos.append('Mais da metade das linhas ficou em REVISAR. Confira se a planilha e o layout estão corretos.')
 
         # Criar nova pasta de trabalho limpa e sanitizada
         wb_novo = openpyxl.Workbook()
