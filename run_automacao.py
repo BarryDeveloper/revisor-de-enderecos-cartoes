@@ -5,7 +5,7 @@ import logging
 import zipfile
 
 # Configuração de logging estruturado
-_handlers = [logging.StreamHandler()]
+_handlers: list[logging.Handler] = [logging.StreamHandler()]
 try:
     _handlers.append(logging.FileHandler(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "revisor.log"), encoding="utf-8"))
@@ -53,6 +53,7 @@ except ImportError:
         root.destroy()
         sys.exit(1)
 
+from openpyxl.utils.exceptions import InvalidFileException
 from src.excel_processor import ExcelProcessor
 
 def selecionar_arquivo_interface():
@@ -179,7 +180,7 @@ def main():
         )
         root.destroy()
 
-    except (zipfile.BadZipFile, openpyxl.utils.exceptions.InvalidFileException) as e:
+    except (zipfile.BadZipFile, InvalidFileException) as e:
         logger.error(f"Arquivo inválido: {e}")
         root = tk.Tk()
         root.withdraw()
