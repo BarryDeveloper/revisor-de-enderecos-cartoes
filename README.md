@@ -55,6 +55,7 @@ Basta dar **duplo clique no arquivo `run_automacao.py`**:
 4. O arquivo final será gerado automaticamente na **mesma pasta** de onde você selecionou a planilha:
    `[PASTA_ORIGINAL]/[NOME_DA_PLANILHA]_REVISADO_YYYYMMDD_HHMMSS.xlsx`
 5. Uma notificação visual de sucesso confirma a conclusão e o local do arquivo.
+6. Em caso de erro, os detalhes ficam gravados em `revisor.log`, na mesma pasta do `run_automacao.py`.
 
 ---
 
@@ -70,6 +71,7 @@ Basta dar **duplo clique no arquivo `run_automacao.py`**:
 * **CEP Antigo de Outra Cidade:** Se a cidade mudou e nenhum CEP novo foi encontrado, a linha vai para revisão em vez de manter o CEP antigo.
 * **Linhas Vazias:** Linhas sem endereço ou em branco são mantidas no arquivo para preservar a contagem exata de chamados e recebem `REVISADO_PELO_SCRIPT = NÃO`.
 * **Resiliência de Rede (Modo Offline):** Caso os serviços públicos de CEP (ViaCEP e BrasilAPI) estejam temporariamente indisponíveis, o script utiliza o cache local em memória e mantém os dados originais para revisão manual, sem travar a execução.
+* **Aviso de APIs indisponíveis:** se ViaCEP, BrasilAPI ou IBGE ficarem fora do ar durante o processamento, o popup final aparece como aviso amarelo e a coluna `MOTIVO_REVISAO` indica 'Consulta de CEP indisponível (rede/proxy)'.
 
 ---
 

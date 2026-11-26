@@ -2,12 +2,20 @@ import os
 import sys
 import subprocess
 import logging
+import zipfile
 
 # Configuração de logging estruturado
+_handlers = [logging.StreamHandler()]
+try:
+    _handlers.append(logging.FileHandler(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "revisor.log"), encoding="utf-8"))
+except OSError:
+    pass  # pasta sem permissão de escrita: segue só com o console
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S"
+    datefmt="%H:%M:%S",
+    handlers=_handlers
 )
 logger = logging.getLogger("AppCartoes")
 
@@ -72,7 +80,7 @@ def executar_processamento(arquivo_entrada, arquivo_saida=None):
         arquivo_saida (str, opcional): Caminho da planilha de saída.
 
     Returns:
-        tuple[int, int, str]: (sucessos, revisoes, caminho_saida_final)
+        tuple[int, int, str, list]: (sucessos, revisoes, caminho_saida_final, avisos)
     """
     if not arquivo_saida:
         dir_origem = os.path.dirname(os.path.abspath(arquivo_entrada))
@@ -82,7 +90,7 @@ def executar_processamento(arquivo_entrada, arquivo_saida=None):
 
     processor = ExcelProcessor()
     total_sucesso, total_revisao = processor.processar_planilha(arquivo_entrada, arquivo_saida)
-    return total_sucesso, total_revisao, arquivo_saida
+    return total_sucesso, total_revisao, arquivo_saida, list(processor.avisos)
 
 def main():
     """Ponto de entrada interativo da automação com interface do Windows."""
@@ -110,7 +118,7 @@ def main():
     logger.info("Processando base de chamados e revisando endereços...")
 
     try:
-        total_sucesso, total_revisao, arquivo_saida = executar_processamento(arquivo_entrada)
+        total_sucesso, total_revisao, arquivo_saida, avisos = executar_processamento(arquivo_entrada)
 
         print("\n" + "=" * 60)
         print("   RESULTADO DO PROCESSAMENTO")
@@ -130,13 +138,19 @@ def main():
             f"• Para Revisão Manual: {total_revisao}\n\n"
             f"O arquivo revisado foi salvo na mesma pasta:\n{arquivo_saida}"
         )
-        messagebox.showinfo("Automação Time Viagens", mensagem)
+        if avisos:
+            mensagem += "\n\n⚠ ATENÇÃO:\n• " + "\n• ".join(avisos)
+            for a in avisos:
+                logger.warning(a)
+            messagebox.showwarning("Automação Time Viagens - concluído com avisos", mensagem)
+        else:
+            messagebox.showinfo("Automação Time Viagens", mensagem)
         root.destroy()
 
     except PermissionError as e:
         msg_erro = (
-            "Não foi possível salvar a planilha revisada porque o arquivo já está aberto no Microsoft Excel.\n\n"
-            "👉 Por favor, feche a planilha no Excel e execute a automação novamente."
+            "Não foi possível salvar a planilha revisada porque o arquivo está aberto no Microsoft Excel (ou a pasta não permite gravar).\n\n"
+            "👉 Feche a planilha de origem e a revisada no Excel e execute novamente."
         )
         logger.error(f"Erro de permissão: {e}")
         root = tk.Tk()
@@ -154,8 +168,33 @@ def main():
         messagebox.showerror("Arquivo Não Encontrado", msg_erro)
         root.destroy()
 
+    except ValueError as e:
+        logger.error(f"Planilha fora do padrão: {e}")
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        messagebox.showerror(
+            "Planilha fora do padrão",
+            f"{e}\n\nConfira se o cabeçalho está na primeira linha e se a aba tem as 7 colunas de endereço."
+        )
+        root.destroy()
+
+    except (zipfile.BadZipFile, openpyxl.utils.exceptions.InvalidFileException) as e:
+        logger.error(f"Arquivo inválido: {e}")
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        messagebox.showerror(
+            "Arquivo inválido",
+            "O arquivo não é um .xlsx válido.\n\nAbra no Excel e use 'Salvar como' > Pasta de Trabalho do Excel (.xlsx)."
+        )
+        root.destroy()
+
     except Exception as e:
-        msg_erro = f"Ocorreu um erro inesperado durante o processamento:\n{e}"
+        msg_erro = (
+            f"Ocorreu um erro inesperado durante o processamento:\n{e}"
+            "\n\nOs detalhes foram gravados em revisor.log (na pasta do programa). Envie esse arquivo para o suporte."
+        )
         logger.exception("Falha durante o processamento da planilha:")
         root = tk.Tk()
         root.withdraw()

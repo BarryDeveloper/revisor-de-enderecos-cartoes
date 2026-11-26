@@ -3,4 +3,5 @@
 *.xlsx
 .env
 .venv/
+*.log
 
