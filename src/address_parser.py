@@ -281,22 +281,6 @@ class AddressParser:
                 if cauda_apos_uf:
                     resultado["complemento_real"] = cauda_apos_uf
 
-        # Bairro composto no fim, quando não há vírgula antes da UF:
-        # "Rua São José 20 Nova Marituba - PA"
-        if not resultado["cidade"]:
-            match_bairro_composto = re.search(
-                r"\b(Nova|Novo|Vila|Jardim|Jd\.?|Parque|Pq\.?|Residencial|Condom[ií]nio|Cond\.?|Bairro)\s+([A-Za-zÀ-ÿ\s]+?)\s*[-–]\s*(PA|MG|MA|SP|RJ|ES|GO|BA|PR|SC|RS|CE|PE)\s*$",
-                texto,
-                re.IGNORECASE,
-            )
-            if match_bairro_composto:
-                bairro_encontrado = " ".join(match_bairro_composto.group(1, 2)).strip()
-                cidade_encontrada = match_bairro_composto.group(2).strip()
-                resultado["bairro"] = bairro_encontrado
-                resultado["estado"] = match_bairro_composto.group(3).upper()
-                resultado["cidade"] = cidade_encontrada
-                texto = texto[:match_bairro_composto.start()].strip(" ,-\\/–")
-
         # Fallback de UF se não extraído acima (aceita também UF solta no final sem hífen/vírgula, ex: 'Centro Parauapebas PA')
         if not resultado["estado"]:
             match_uf = re.search(r"[-,\/–]\s*([A-Za-zÀ-ÿ]{2,15})\s*$", texto)
@@ -388,7 +372,7 @@ class AddressParser:
         # Regra operacional: Lote (Lote/Lt.) vale como número da casa quando não houver outro número explícito
         lote_extraido = ""
         match_qd_lt = re.search(
-            r"\b((?:Quadra|Qd\.?)(?![A-Za-zÀ-ÿ])\s*[A-Za-z0-9]+)\s*(?:[-,e]\s*)?((?:Lote|Lt\.?)\s*[A-Za-z0-9]+(?:-[A-Za-z0-9]+)?)\b",
+            r"\b((?:Quadra|Qd\.?)\s*[A-Za-z0-9]+)\s*(?:[-,e]\s*)?((?:Lote|Lt\.?)\s*[A-Za-z0-9]+(?:-[A-Za-z0-9]+)?)\b",
             texto,
             re.IGNORECASE,
         )
@@ -398,7 +382,7 @@ class AddressParser:
             resultado["complemento_real"] = f"{qd_txt}, {resultado['complemento_real']}" if resultado["complemento_real"] else qd_txt
             texto = (texto[:match_qd_lt.start()] + " " + texto[match_qd_lt.end():]).strip()
         else:
-            match_qd = re.search(r"\b(?:Quadra|Qd\.?)(?![A-Za-zÀ-ÿ])\s*[A-Za-z0-9]+\b", texto, re.IGNORECASE)
+            match_qd = re.search(r"\b(?:Quadra|Qd\.?)\s*[A-Za-z0-9]+\b", texto, re.IGNORECASE)
             if match_qd:
                 qd_txt = match_qd.group(0).strip(" ,-")
                 resultado["complemento_real"] = f"{qd_txt}, {resultado['complemento_real']}" if resultado["complemento_real"] else qd_txt
@@ -522,15 +506,6 @@ class AddressParser:
                     f"{lote_extraido}, {resultado['complemento_real']}".strip(" ,")
                     if resultado["complemento_real"] else lote_extraido
                 )
-
-        # Preserva o nome da via completo quando ele contém palavras comuns
-        # como "Quadrante" e não confunde o trecho final com uma unidade ou número.
-        if resultado["logradouro"].strip().lower() in {"rua", "r.", "avenida", "av.", "alameda", "travessa", "passagem"}:
-            partes_via = locals().get("partes", [])
-            if partes_via:
-                primeira_via = partes_via[0].strip()
-                if _RE_INICIO_VIA.match(primeira_via):
-                    resultado["logradouro"] = primeira_via
 
         # Remover 'Casa de Andar' do final do bairro para não poluir o nome do bairro
         if resultado["bairro"]:

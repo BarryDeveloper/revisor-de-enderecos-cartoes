@@ -76,8 +76,6 @@ def _gerar_termos_busca_viacep(logradouro):
         v_limpo = v.strip()
         if len(v_limpo) >= 3 and v_limpo not in variantes:
             variantes.append(v_limpo)
-    if nucleo_alg and nucleo_alg not in variantes:
-        variantes.append(nucleo_alg)
     return variantes
 
 
