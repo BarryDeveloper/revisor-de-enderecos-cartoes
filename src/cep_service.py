@@ -4,7 +4,33 @@ import urllib.parse
 import unicodedata
 import requests
 
+from src.address_parser import normalizar_numeros_por_extenso
+
 logger = logging.getLogger("CEPService")
+
+_ALGARISMO_PARA_EXTENSO = {
+    "1": "Um",
+    "2": "Dois",
+    "3": "Três",
+    "4": "Quatro",
+    "5": "Cinco",
+    "6": "Seis",
+    "7": "Sete",
+    "8": "Oito",
+    "9": "Nove",
+    "10": "Dez",
+    "11": "Onze",
+    "12": "Doze",
+    "13": "Treze",
+    "14": "Quatorze",
+    "15": "Quinze",
+    "16": "Dezesseis",
+    "17": "Dezessete",
+    "18": "Dezoito",
+    "19": "Dezenove",
+    "20": "Vinte",
+    "30": "Trinta",
+}
 
 
 def _remover_acentos(texto):
@@ -12,6 +38,47 @@ def _remover_acentos(texto):
         return ""
     nfkd = unicodedata.normalize('NFKD', str(texto))
     return "".join([c for c in nfkd if not unicodedata.combining(c)]).strip().upper()
+
+
+def _normalizar_nome_logradouro(texto):
+    """Normaliza acentos e converte números por extenso isolados ('TRES' -> '3')."""
+    base = _remover_acentos(texto)
+    return normalizar_numeros_por_extenso(base)
+
+
+def _gerar_termos_busca_viacep(logradouro):
+    """
+    Gera variantes do núcleo do logradouro para consulta na ViaCEP:
+    1) Com algarismos normalizados (ex: '3', '15 de Novembro')
+    2) Com números convertidos para extenso (ex: 'Três', 'Quinze de Novembro'),
+       contornando o limite mínimo de 3 caracteres da ViaCEP e ruas cadastradas por extenso.
+    """
+    logr_norm = normalizar_numeros_por_extenso(logradouro)
+    nucleo_alg = re.sub(
+        r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praca|praça)\s+",
+        "",
+        str(logr_norm).strip(),
+        flags=re.IGNORECASE,
+    ).strip()
+    if not nucleo_alg:
+        return []
+
+    tokens_ext = [
+        _ALGARISMO_PARA_EXTENSO.get(tok, tok)
+        for tok in nucleo_alg.split()
+    ]
+    nucleo_ext = " ".join(tokens_ext)
+
+    variantes = []
+    # Se o núcleo em algarismo tiver menos de 3 caracteres (ex: '3'), prioriza a forma por extenso ('Três')
+    ordem = [nucleo_ext, nucleo_alg] if len(nucleo_alg) < 3 else [nucleo_alg, nucleo_ext]
+    for v in ordem:
+        v_limpo = v.strip()
+        if len(v_limpo) >= 3 and v_limpo not in variantes:
+            variantes.append(v_limpo)
+    if nucleo_alg and nucleo_alg not in variantes:
+        variantes.append(nucleo_alg)
+    return variantes
 
 
 def _normalizar_bairro_comparacao(bairro):
@@ -51,7 +118,7 @@ _RE_TIPO_VIA = re.compile(r"^(" + "|".join(sorted(_TIPOS_VIA, key=len, reverse=T
 
 def _separar_tipo_via(logradouro):
     """Retorna (tipo normalizado, nome normalizado). Tipo vazio se não reconhecido."""
-    norm = _remover_acentos(logradouro)
+    norm = _normalizar_nome_logradouro(logradouro)
     m = _RE_TIPO_VIA.match(norm)
     if m:
         return _TIPOS_VIA[m.group(1)], m.group(2).strip()
@@ -122,10 +189,10 @@ class CEPService:
     def consultar_cep(self, cep):
         """
         Consulta CEP com redundância dupla:
-        1. Cache em memória (sucessos e falhas)
-        2. Circuit Breaker (desativa chamadas se houver bloqueio de rede/proxy)
-        3. ViaCEP
-        4. BrasilAPI (fallback se o ViaCEP oscilar)
+1. Cache em memória (sucessos e falhas)
+2. Circuit Breaker (desativa chamadas se houver bloqueio de rede/proxy)
+3. ViaCEP
+4. BrasilAPI (fallback se o ViaCEP oscilar)
         """
         cep_limpo = re.sub(r"\D", "", str(cep)).zfill(8)
         if len(cep_limpo) != 8:
@@ -307,7 +374,7 @@ class CEPService:
 
     @staticmethod
     def mesmo_logradouro(logr_a, logr_b):
-        """Mesmo tipo de via (quando ambos informam) e mesmo nome, sem acento e sem abreviação."""
+        """Mesmo tipo de via (quando ambos informam) e mesmo nome, sem acento, sem abreviação e com números normalizados."""
         tipo_a, nome_a = _separar_tipo_via(logr_a)
         tipo_b, nome_b = _separar_tipo_via(logr_b)
         if tipo_a and tipo_b and tipo_a != tipo_b:
@@ -346,9 +413,9 @@ class CEPService:
     def resolver_cep_endereco(self, uf, cidade, logradouro, bairro="", numero=""):
         """
         Descobre o CEP a partir do endereço (UF, cidade, rua, bairro e número da casa):
-        1. Cidade de CEP único (ViaCEP devolve um único registro, sem rua).
-        2. Busca por rua, desempatando por bairro e pelas faixas de numeração dos Correios.
-        3. Tabela local (só cache), apenas quando a ViaCEP está indisponível.
+1. Cidade de CEP único (ViaCEP devolve um único registro, sem rua).
+2. Busca por rua, desempatando por bairro e pelas faixas de numeração dos Correios.
+3. Tabela local (só cache), apenas quando a ViaCEP está indisponível.
         """
         cep_unico = self.buscar_cep_unico(uf, cidade)
         if cep_unico:
@@ -368,34 +435,61 @@ class CEPService:
                 return lista[0].get("cep")
         return None
 
+    def _consultar_viacep_variantes_logradouro(self, uf_limpa, cidade_limpa, logradouro):
+        """
+        Consulta a ViaCEP testando as variantes do núcleo do logradouro (algarismo e por extenso).
+        Acumula os resultados únicos sem quebrar quando uma das variantes tem < 3 caracteres.
+        """
+        variantes = _gerar_termos_busca_viacep(logradouro)
+        if not variantes:
+            return []
+
+        url_uf = urllib.parse.quote(uf_limpa, safe="")
+        url_cid = urllib.parse.quote(cidade_limpa, safe="")
+
+        resultados = []
+        vistos = set()
+        for termo in variantes:
+            if self._api_desativada:
+                break
+            url_logr = urllib.parse.quote(termo, safe="")
+            url = f"https://viacep.com.br/ws/{url_uf}/{url_cid}/{url_logr}/json/"
+            dados = self._get_json(url)
+            if isinstance(dados, list) and dados:
+                for item in dados:
+                    chave_item = (
+                        item.get("cep", ""),
+                        item.get("logradouro", ""),
+                        item.get("bairro", ""),
+                        item.get("complemento", ""),
+                    )
+                    if chave_item not in vistos:
+                        vistos.add(chave_item)
+                        resultados.append(item)
+                # Se já encontrou correspondência exata na primeira variante, não precisa consultar a segunda
+                if resultados:
+                    break
+        return resultados
+
     def buscar_cep_por_logradouro(self, uf, cidade, logradouro, bairro="", numero=""):
         """
-        Busca o CEP nos Correios a partir da UF, Cidade e Nome da Rua.
+        Busca o CEP nos Correios a partir da UF, Cidade e Nome da Rua (testando algarismo e por extenso).
         Utiliza cache em memória e desambiguação por Bairro e número da casa.
         """
         if not uf or not cidade or not logradouro:
             return None
 
-        termo_busca = re.sub(
-            r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praca|praça)\s+",
-            "",
-            str(logradouro).strip(),
-            flags=re.IGNORECASE,
-        ).strip()
-        if len(termo_busca) < 3:
-            termo_busca = str(logradouro).strip()
-            if len(termo_busca) < 1:
-                return None
+        tipo_busca, nome_busca_norm = _separar_tipo_via(logradouro)
+        if not nome_busca_norm:
+            return None
 
         uf_limpa = str(uf).strip().upper()
         cidade_limpa = str(cidade).strip()
-        termo_busca_norm = _remover_acentos(termo_busca)
-        tipo_busca, _ = _separar_tipo_via(logradouro)
         chave_cache = (
             uf_limpa,
             _remover_acentos(cidade_limpa),
             tipo_busca,
-            termo_busca_norm,
+            nome_busca_norm,
             _normalizar_bairro_comparacao(bairro),
             _numero_int(numero),
         )
@@ -408,57 +502,28 @@ class CEPService:
 
         def _logradouro_bate_estritamente(item_retornado):
             logr_api = item_retornado.get("logradouro", "")
-            tipo_api, _ = _separar_tipo_via(logr_api)
+            tipo_api, nome_api_norm = _separar_tipo_via(logr_api)
             if tipo_busca and tipo_api != tipo_busca:
                 return False
-            logr_api_core = _remover_acentos(
-                re.sub(
-                    r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praca|praça)\s+",
-                    "",
-                    logr_api,
-                    flags=re.IGNORECASE,
-                ).strip()
-            )
-            return termo_busca_norm == logr_api_core or termo_busca_norm == _remover_acentos(logr_api)
+            return nome_busca_norm == nome_api_norm or nome_busca_norm == _normalizar_nome_logradouro(logr_api)
 
-        try:
-            url_uf = urllib.parse.quote(uf_limpa, safe="")
-            url_cid = urllib.parse.quote(cidade_limpa, safe="")
-            url_logr = urllib.parse.quote(termo_busca, safe="")
-            url = f"https://viacep.com.br/ws/{url_uf}/{url_cid}/{url_logr}/json/"
-            resp = requests.get(url, timeout=2.5)
-            if resp.status_code == 200:
-                dados = resp.json()
-                if isinstance(dados, list) and dados:
-                    self._falhas_rede_consecutivas = 0
+        dados = self._consultar_viacep_variantes_logradouro(uf_limpa, cidade_limpa, logradouro)
+        if dados:
+            candidatos_validos = [d for d in dados if _logradouro_bate_estritamente(d)]
+            if not candidatos_validos and bairro and len(nome_busca_norm) >= 4:
+                candidatos_parciais = [
+                    d for d in dados
+                    if (not tipo_busca or _separar_tipo_via(d.get("logradouro", ""))[0] == tipo_busca)
+                    and nome_busca_norm in _normalizar_nome_logradouro(d.get("logradouro", ""))
+                    and _bairros_compativeis(bairro, d.get("bairro", ""))
+                ]
+                escolhido = self._escolher_candidato(candidatos_parciais, bairro, numero)
+            else:
+                escolhido = self._escolher_candidato(candidatos_validos, bairro, numero)
 
-                    candidatos_validos = [d for d in dados if _logradouro_bate_estritamente(d)]
-                    if not candidatos_validos and bairro and len(termo_busca_norm) >= 4:
-                        candidatos_parciais = [
-                            d for d in dados
-                            if (not tipo_busca or _separar_tipo_via(d.get("logradouro", ""))[0] == tipo_busca)
-                            and termo_busca_norm in _remover_acentos(d.get("logradouro", ""))
-                            and _bairros_compativeis(bairro, d.get("bairro", ""))
-                        ]
-                        escolhido = self._escolher_candidato(candidatos_parciais, bairro, numero)
-                    else:
-                        escolhido = self._escolher_candidato(candidatos_validos, bairro, numero)
-
-                    cep_encontrado = escolhido.get("cep") if escolhido else None
-                    self._cache_busca_logradouro[chave_cache] = cep_encontrado
-                    return cep_encontrado
-                else:
-                    self._cache_busca_logradouro[chave_cache] = None
-                    return None
-            elif resp.status_code == 400:
-                self._cache_busca_logradouro[chave_cache] = None
-                return None
-        except (requests.RequestException, ValueError) as e:
-            self._falhas_rede_consecutivas += 1
-            logger.warning(f"Erro na busca de CEP por logradouro ({uf_limpa}/{cidade_limpa}/{termo_busca}): {e}")
-            if self._falhas_rede_consecutivas >= 3:
-                self._api_desativada = True
-                logger.error("Rede corporativa inacessível. Desativando consultas de API externas.")
+            cep_encontrado = escolhido.get("cep") if escolhido else None
+            self._cache_busca_logradouro[chave_cache] = cep_encontrado
+            return cep_encontrado
 
         self._cache_busca_logradouro[chave_cache] = None
         return None
@@ -471,24 +536,17 @@ class CEPService:
         if not uf or not cidade or not logradouro:
             return False
 
-        termo_busca = re.sub(
-            r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praca|praça)\s+",
-            "",
-            str(logradouro).strip(),
-            flags=re.IGNORECASE,
-        ).strip()
-        if len(termo_busca) < 1:
+        tipo_busca, nome_busca_norm = _separar_tipo_via(logradouro)
+        if not nome_busca_norm:
             return False
 
         uf_limpa = str(uf).strip().upper()
         cidade_limpa = str(cidade).strip()
-        termo_busca_norm = _remover_acentos(termo_busca)
-        tipo_busca, _ = _separar_tipo_via(logradouro)
         chave_cache = (
             uf_limpa,
             _remover_acentos(cidade_limpa),
             tipo_busca,
-            termo_busca_norm,
+            nome_busca_norm,
             _normalizar_bairro_comparacao(bairro),
             _numero_int(numero),
         )
@@ -499,34 +557,17 @@ class CEPService:
         if self._api_desativada:
             return False
 
-        try:
-            url_uf = urllib.parse.quote(uf_limpa, safe="")
-            url_cid = urllib.parse.quote(cidade_limpa, safe="")
-            url_logr = urllib.parse.quote(termo_busca, safe="")
-            url = f"https://viacep.com.br/ws/{url_uf}/{url_cid}/{url_logr}/json/"
-            resp = requests.get(url, timeout=2.5)
-            if resp.status_code == 200:
-                dados = resp.json()
-                if isinstance(dados, list):
-                    mesmo_nome = [
-                        d for d in dados
-                        if (not tipo_busca or _separar_tipo_via(d.get("logradouro", ""))[0] == tipo_busca)
-                        and (
-                            termo_busca_norm
-                            == _remover_acentos(
-                                re.sub(
-                                    r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praca|praça)\s+",
-                                    "",
-                                    d.get("logradouro", ""),
-                                    flags=re.IGNORECASE,
-                                ).strip()
-                            )
-                            or termo_busca_norm == _remover_acentos(d.get("logradouro", ""))
-                        )
-                    ]
-                    return len(mesmo_nome) > 1
-        except (requests.RequestException, ValueError):
-            return False
+        dados = self._consultar_viacep_variantes_logradouro(uf_limpa, cidade_limpa, logradouro)
+        if dados:
+            mesmo_nome = [
+                d for d in dados
+                if (not tipo_busca or _separar_tipo_via(d.get("logradouro", ""))[0] == tipo_busca)
+                and (
+                    nome_busca_norm == _separar_tipo_via(d.get("logradouro", ""))[1]
+                    or nome_busca_norm == _normalizar_nome_logradouro(d.get("logradouro", ""))
+                )
+            ]
+            return len(mesmo_nome) > 1
 
         return False
 
@@ -540,18 +581,8 @@ class CEPService:
         _, nome = _separar_tipo_via(logradouro)
         if not uf_limpa or len(cidade_limpa) < 3 or len(nome) < 3:
             return None
-        termo = re.sub(
-            r"^(?:rua|r\.|avenida|av\.|alameda|al\.|travessa|trav\.|passagem|pass\.|vicinal|vic\.|estrada|estr\.|rodovia|rod\.|praca|praça)\s+",
-            "",
-            str(logradouro).strip(),
-            flags=re.IGNORECASE,
-        ).strip()
-        url = (
-            f"https://viacep.com.br/ws/{urllib.parse.quote(uf_limpa, safe='')}/"
-            f"{urllib.parse.quote(cidade_limpa, safe='')}/{urllib.parse.quote(termo, safe='')}/json/"
-        )
-        dados = self._get_json(url)
-        if not isinstance(dados, list):
+        dados = self._consultar_viacep_variantes_logradouro(uf_limpa, cidade_limpa, logradouro)
+        if not dados:
             return None
         mesmos = [d for d in dados if _separar_tipo_via(d.get("logradouro", ""))[1] == nome]
         if len(mesmos) != 1:

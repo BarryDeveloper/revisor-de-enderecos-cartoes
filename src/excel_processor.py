@@ -247,16 +247,10 @@ class ExcelProcessor:
                     complemento_final = dados_ext["complemento_real"]
                     cidade_incerta = dados_ext.get("cidade_incerta", False)
 
-                    # Tratamento de número com proteção da sede:
-                    # Se o número não foi encontrado no texto, só herda o número de cadastro se NÃO for da sede
-                    cep_limpo_orig = re.sub(r"\D", "", cep_orig)
                     if dados_ext["numero"]:
                         numero_final = dados_ext["numero"]
                     else:
-                        if cep_limpo_orig == "34006049":
-                            numero_final = ""
-                        else:
-                            numero_final = num_orig
+                        numero_final = num_orig
 
                     # Validação de CEP via API quando extraído do complemento
                     if dados_ext["cep"]:
@@ -290,11 +284,9 @@ class ExcelProcessor:
 
                     # O CEP cadastrado é só a "chave" que libera o campo (pode ser de qualquer lugar).
                     # Se o complemento traz o endereço real sem CEP, o CEP é descoberto pelo endereço.
-                    cep_limpo_orig = re.sub(r"\D", "", cep_orig)
-                    eh_sede = cep_limpo_orig == "34006049"
                     cidade_mudou = self._remover_acentos_str(cidade_final).upper() != self._remover_acentos_str(cidade_orig).upper()
-                    if not dados_ext["cep"] and not cidade_reclassificada and (eh_sede or cidade_mudou or dados_ext["logradouro"]):
-                        if not eh_sede and self._cep_cadastrado_confere(
+                    if not dados_ext["cep"] and not cidade_reclassificada and (cidade_mudou or dados_ext["logradouro"]):
+                        if self._cep_cadastrado_confere(
                                 cep_orig, logr_orig, num_orig, logradouro_final, numero_final,
                                 cidade_final, estado_final, cidade_mudou):
                             pass  # o cadastro já estava correto e o complemento só repete o endereço
@@ -375,15 +367,12 @@ class ExcelProcessor:
                 tem_cidade = bool(str(cidade_final).strip())
                 tem_uf = bool(str(estado_final).strip() and len(str(estado_final).strip()) == 2)
 
-                # 5. Trava da Sede: Se o CEP for da Sede (34006-049) e a cidade não for Nova Lima, vai para revisão!
-                # E se era da sede, foi detectado endereço, mas não foi resolvida uma cidade válida diferente da sede, vai para revisão!
+                # 5. Trava da Sede: só dispara quando o CEP for 34006-049 e a cidade final NÃO for Nova Lima
                 cep_limpo_check = re.sub(r"\D", "", str(cep_formatado))
                 cidade_norm_check = self._remover_acentos_str(cidade_final).strip().upper()
                 sede_invalida = False
                 if cep_limpo_check == "34006049":
-                    if cidade_norm_check not in ("NOVA LIMA", ""):
-                        sede_invalida = True
-                    elif deve_extrair and (cidade_norm_check == "NOVA LIMA" or not dados_ext.get("cidade")):
+                    if not cidade_norm_check or cidade_norm_check != "NOVA LIMA":
                         sede_invalida = True
 
                 motivos = []
