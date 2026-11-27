@@ -462,14 +462,20 @@ class ExcelProcessor:
         """Aplica tipografia limpa, cores corporativas elegantes e ajuste perfeito de colunas."""
         cor_azul_ibm = "0F62FE"      # Azul IBM Carbon
         cor_fundo_par = "F4F7FB"     # Cinza suave
+        cor_revisar_bg = "FFF8E1"    # Amarelo/âmbar bem sutil para linhas em REVISAR
+        cor_revisar_txt = "92400E"   # Âmbar escuro para destaque na coluna STATUS_EMISSAO
+        cor_pronto_txt = "137333"    # Verde escuro discreto para PRONTO
         cor_borda = "D9D9D9"
 
         fonte_cabecalho = Font(name="Segoe UI", size=10, bold=True, color="FFFFFF")
         fonte_dados = Font(name="Segoe UI", size=10, color="1F2328")
+        fonte_revisar_status = Font(name="Segoe UI", size=10, bold=True, color=cor_revisar_txt)
+        fonte_pronto_status = Font(name="Segoe UI", size=10, bold=True, color=cor_pronto_txt)
 
         fill_cabecalho = PatternFill(start_color=cor_azul_ibm, end_color=cor_azul_ibm, fill_type="solid")
         fill_linha_par = PatternFill(start_color=cor_fundo_par, end_color=cor_fundo_par, fill_type="solid")
         fill_linha_impar = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+        fill_revisar = PatternFill(start_color=cor_revisar_bg, end_color=cor_revisar_bg, fill_type="solid")
 
         borda_suave = Border(
             left=Side(style='thin', color=cor_borda),
@@ -481,24 +487,38 @@ class ExcelProcessor:
         ws.row_dimensions[1].height = 28
         ws.freeze_panes = "A2"
 
-        # Estilizar cabeçalho
+        # Estilizar cabeçalho e identificar índice da coluna STATUS_EMISSAO
+        idx_col_status = None
         for col_idx in range(1, ws.max_column + 1):
             cell = ws.cell(row=1, column=col_idx)
             cell.font = fonte_cabecalho
             cell.fill = fill_cabecalho
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.border = borda_suave
+            if str(cell.value or "").strip().upper() == "STATUS_EMISSAO":
+                idx_col_status = col_idx
 
         # Estilizar dados
         for row_idx in range(2, ws.max_row + 1):
             ws.row_dimensions[row_idx].height = 20
-            fill_atual = fill_linha_par if row_idx % 2 == 0 else fill_linha_impar
+            status_val = (
+                str(ws.cell(row=row_idx, column=idx_col_status).value or "").strip().upper()
+                if idx_col_status else ""
+            )
+            eh_revisar = status_val == "REVISAR"
+            fill_atual = fill_revisar if eh_revisar else (fill_linha_par if row_idx % 2 == 0 else fill_linha_impar)
 
             for col_idx in range(1, ws.max_column + 1):
                 cell = ws.cell(row=row_idx, column=col_idx)
-                cell.font = fonte_dados
                 cell.fill = fill_atual
                 cell.border = borda_suave
+
+                if col_idx == idx_col_status and eh_revisar:
+                    cell.font = fonte_revisar_status
+                elif col_idx == idx_col_status and status_val == "PRONTO":
+                    cell.font = fonte_pronto_status
+                else:
+                    cell.font = fonte_dados
 
                 nome_col = str(ws.cell(row=1, column=col_idx).value or '').upper()
                 if any(k in nome_col for k in ["CEP", "ESTADO", "UF", "NASCIMENTO", "VIA", "CPF", "TELEFONE", "ID", "REVISADO", "STATUS"]):
